@@ -248,7 +248,6 @@ def create_job_for_project(db: Session, *, project_id: str, queue: str) -> JobSt
         project.transcript_status = "queued"
         if project.translation_status != "not_started":
             project.translation_status = "not_started"
-            _clear_translated_segments(db, project)
     if queue == TRANSLATE_QUEUE:
         project.translation_status = "queued"
 

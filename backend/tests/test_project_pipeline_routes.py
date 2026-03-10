@@ -39,6 +39,54 @@ def test_transcribe_endpoint_sets_transcript_stage_to_queued(client, monkeypatch
     assert detail.json()["transcript_status"] == "queued"
 
 
+def test_retranscribe_queue_preserves_existing_translation_until_new_transcript_succeeds(
+    client,
+    monkeypatch,
+) -> None:
+    delay_mock = Mock()
+    monkeypatch.setattr("app.api.routes.projects.transcribe_project_task.delay", delay_mock)
+
+    with SessionLocal() as db:
+        project = Project(
+            id="project-retranscribe-queued",
+            owner_id="local-dev",
+            name="Retranscribe queued",
+            source_type="upload",
+            source_url="/storage/uploads/project-retranscribe-queued/clip.mp4",
+            status="transcribed",
+            transcript_status="ready",
+            translation_status="ready",
+        )
+        segment = TranscriptSegment(
+            id="segment-retranscribe-queued",
+            project_id=project.id,
+            speaker="Speaker A",
+            start_ms=0,
+            end_ms=1000,
+            original_text="Hello",
+            translated_text="Czesc",
+        )
+        db.add_all([project, segment])
+        db.commit()
+
+    response = client.post("/api/projects/project-retranscribe-queued/transcribe")
+
+    assert response.status_code == 202
+    delay_mock.assert_called_once()
+
+    detail = client.get("/api/projects/project-retranscribe-queued")
+
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "transcription_queued"
+    assert detail.json()["translation_status"] == "not_started"
+    assert detail.json()["transcript_segments"][0]["translated_text"] == ""
+
+    with SessionLocal() as db:
+        saved_segment = db.get(TranscriptSegment, "segment-retranscribe-queued")
+        assert saved_segment is not None
+        assert saved_segment.translated_text == "Czesc"
+
+
 def test_translate_endpoint_sets_translation_stage_to_queued_without_changing_legacy_status(
     client,
     monkeypatch,
@@ -511,7 +559,7 @@ def test_retranscribe_task_invalidates_ready_translation_before_processing(
 
     assert result == {"project_id": "project-retranscribe", "status": "transcribed"}
     assert observed_statuses == [("transcribing", "in_progress", "not_started")]
-    assert observed_translated_texts == [""]
+    assert observed_translated_texts == ["Stary tekst"]
 
     with SessionLocal() as db:
         saved_project = db.get(Project, "project-retranscribe")

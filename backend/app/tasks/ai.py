@@ -98,9 +98,8 @@ def _clear_translated_segments(db, project: Project) -> None:
     )
 
 
-def _invalidate_translation_state(db, project: Project) -> None:
+def _invalidate_translation_state(project: Project) -> None:
     project.translation_status = "not_started"
-    _clear_translated_segments(db, project)
 
 
 def _ensure_transcription_job_can_start(project: Project) -> None:
@@ -135,7 +134,7 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
 
         _ensure_transcription_job_can_start(project)
         if project.translation_status != "not_started":
-            _invalidate_translation_state(db, project)
+            _invalidate_translation_state(project)
 
         job.state = "started"
         job.progress = 10
