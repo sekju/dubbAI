@@ -12,6 +12,12 @@ from app.services.gemini import GeminiClient
 from app.services.media import extract_audio
 from app.services.pipeline import parse_transcript_payload
 
+ACTIVE_STAGE_STATUSES = {"queued", "in_progress"}
+
+
+class StageConflictError(RuntimeError):
+    pass
+
 
 def _fallback_segments(project_name: str) -> list[dict[str, object]]:
     return [
@@ -76,6 +82,32 @@ def _persist_segments(
         )
 
 
+def _clear_translated_segments(db, project: Project) -> None:
+    db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).update(
+        {TranscriptSegment.translated_text: ""},
+        synchronize_session=False,
+    )
+
+
+def _invalidate_translation_state(db, project: Project) -> None:
+    project.translation_status = "not_started"
+    _clear_translated_segments(db, project)
+
+
+def _ensure_transcription_job_can_start(project: Project) -> None:
+    if project.transcript_status != "queued":
+        raise StageConflictError("Transcription job is stale")
+    if project.translation_status in ACTIVE_STAGE_STATUSES:
+        raise StageConflictError("Cannot start transcription while translation is queued or in progress")
+
+
+def _ensure_translation_job_can_start(project: Project) -> None:
+    if project.translation_status != "queued":
+        raise StageConflictError("Translation job is stale")
+    if project.transcript_status in ACTIVE_STAGE_STATUSES:
+        raise StageConflictError("Cannot start translation while transcription is queued or in progress")
+
+
 @celery_app.task(name="app.tasks.ai.transcribe_project")
 def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
     settings = get_settings()
@@ -85,6 +117,10 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
         project = db.get(Project, project_id)
         if not job or not project:
             raise ValueError("Project or job not found")
+
+        _ensure_transcription_job_can_start(project)
+        if project.translation_status != "not_started":
+            _invalidate_translation_state(db, project)
 
         job.state = "started"
         job.progress = 10
@@ -112,6 +148,13 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
         job.progress = 100
         db.commit()
         return {"project_id": project.id, "status": "transcribed"}
+    except StageConflictError:
+        job = db.get(PipelineJob, job_id)
+        if job:
+            job.state = "failure"
+            job.progress = 100
+        db.commit()
+        raise
     except Exception:
         job = db.get(PipelineJob, job_id)
         project = db.get(Project, project_id)
@@ -137,9 +180,11 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
         if not job or not project:
             raise ValueError("Project or job not found")
 
+        _ensure_translation_job_can_start(project)
+        _clear_translated_segments(db, project)
+
         job.state = "started"
         job.progress = 10
-        project.status = "translating"
         project.translation_status = "in_progress"
         db.commit()
 
@@ -162,12 +207,18 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
 
         _persist_segments(db, project, segments, include_translation=True)
 
-        project.status = "translated"
         project.translation_status = "ready"
         job.state = "success"
         job.progress = 100
         db.commit()
-        return {"project_id": project.id, "status": "translated"}
+        return {"project_id": project.id, "status": project.status}
+    except StageConflictError:
+        job = db.get(PipelineJob, job_id)
+        if job:
+            job.state = "failure"
+            job.progress = 100
+        db.commit()
+        raise
     except Exception:
         job = db.get(PipelineJob, job_id)
         project = db.get(Project, project_id)
@@ -175,7 +226,6 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
             job.state = "failure"
             job.progress = 100
         if project:
-            project.status = "translation_failed"
             project.translation_status = "failed"
         db.commit()
         raise

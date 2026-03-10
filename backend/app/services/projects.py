@@ -24,6 +24,13 @@ INGEST_QUEUE = "app.tasks.ingest.ingest_source"
 TRANSCRIBE_QUEUE = "app.tasks.ai.transcribe_project"
 TRANSLATE_QUEUE = "app.tasks.ai.translate_project"
 LANGUAGE_CODE_MAX_LENGTH = 32
+ACTIVE_STAGE_STATUSES = {"queued", "in_progress"}
+TRANSLATION_ONLY_LEGACY_STATUSES = {
+    "translation_queued",
+    "translating",
+    "translated",
+    "translation_failed",
+}
 
 
 def _resolve_target_language(source_language: str | None, target_language: str | None) -> str | None:
@@ -50,7 +57,6 @@ def _normalize_language_code(language: str | None) -> str | None:
         )
     return normalized
 
-
 def _serialize_segments(
     segments: list[TranscriptSegment],
     *,
@@ -69,6 +75,54 @@ def _serialize_segments(
     ]
 
 
+def _legacy_compatible_status(project: Project) -> str:
+    if project.status not in TRANSLATION_ONLY_LEGACY_STATUSES:
+        return project.status
+    if project.transcript_status == "queued":
+        return "transcription_queued"
+    if project.transcript_status == "in_progress":
+        return "transcribing"
+    if project.transcript_status == "ready":
+        return "transcribed"
+    if project.transcript_status == "failed":
+        return "transcription_failed"
+    return "queued"
+
+
+def _clear_translated_segments(db: Session, project: Project) -> None:
+    db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).update(
+        {TranscriptSegment.translated_text: ""},
+        synchronize_session=False,
+    )
+
+
+def _validate_pipeline_transition(project: Project, *, queue: str) -> None:
+    if queue == TRANSCRIBE_QUEUE:
+        if project.transcript_status in ACTIVE_STAGE_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Transcription is already queued or in progress",
+            )
+        if project.translation_status in ACTIVE_STAGE_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot start transcription while translation is queued or in progress",
+            )
+        return
+
+    if queue == TRANSLATE_QUEUE:
+        if project.translation_status in ACTIVE_STAGE_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Translation is already queued or in progress",
+            )
+        if project.transcript_status in ACTIVE_STAGE_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot start translation while transcription is queued or in progress",
+            )
+
+
 def serialize_project(db: Session, project: Project) -> ProjectResponse:
     segments = db.scalars(
         select(TranscriptSegment)
@@ -82,7 +136,7 @@ def serialize_project(db: Session, project: Project) -> ProjectResponse:
         source_url=project.source_url,
         source_language=project.source_language,
         target_language=project.target_language,
-        status=project.status,
+        status=_legacy_compatible_status(project),
         transcript_status=project.transcript_status,
         translation_status=project.translation_status,
         dubbing_status=project.dubbing_status,
@@ -97,7 +151,7 @@ def serialize_library_project(project: Project) -> LibraryProjectResponse:
     return LibraryProjectResponse(
         id=project.id,
         name=project.name,
-        status=project.status,
+        status=_legacy_compatible_status(project),
         source_type=project.source_type,
         source_url=project.source_url,
         source_language=project.source_language,
@@ -173,12 +227,17 @@ def create_project_with_job(
 
 def create_job_for_project(db: Session, *, project_id: str, queue: str) -> JobStatusResponse:
     project = get_project_model_or_404(db, project_id)
+    _validate_pipeline_transition(project, queue=queue)
+
     if queue == TRANSCRIBE_QUEUE:
         project.status = "transcription_queued"
         project.transcript_status = "queued"
+        if project.translation_status != "not_started":
+            project.translation_status = "not_started"
+            _clear_translated_segments(db, project)
     if queue == TRANSLATE_QUEUE:
-        project.status = "translation_queued"
         project.translation_status = "queued"
+        _clear_translated_segments(db, project)
 
     job = PipelineJob(
         id=str(uuid4()),
