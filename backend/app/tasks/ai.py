@@ -235,9 +235,12 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
         return {"project_id": project.id, "status": project.status}
     except StageConflictError:
         job = db.get(PipelineJob, job_id)
+        project = db.get(Project, project_id)
         if job:
             job.state = "failure"
             job.progress = 100
+        if project:
+            project.translation_status = "failed"
         db.commit()
         raise
     except Exception:
