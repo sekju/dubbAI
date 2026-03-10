@@ -67,6 +67,7 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
         job.state = "started"
         job.progress = 10
         project.status = "transcribing"
+        project.transcript_status = "in_progress"
         db.commit()
 
         source_path = _resolve_source_path(project)
@@ -96,6 +97,7 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
             )
 
         project.status = "transcribed"
+        project.transcript_status = "ready"
         job.state = "success"
         job.progress = 100
         db.commit()
@@ -108,6 +110,7 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
             job.progress = 100
         if project:
             project.status = "transcription_failed"
+            project.transcript_status = "failed"
         db.commit()
         raise
     finally:

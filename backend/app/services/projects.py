@@ -134,6 +134,7 @@ def create_job_for_project(db: Session, *, project_id: str, queue: str) -> JobSt
     project = get_project_model_or_404(db, project_id)
     if queue == TRANSCRIBE_QUEUE:
         project.status = "transcription_queued"
+        project.transcript_status = "queued"
 
     job = PipelineJob(
         id=str(uuid4()),

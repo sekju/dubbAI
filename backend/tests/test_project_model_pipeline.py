@@ -1,3 +1,8 @@
+import sqlite3
+
+from sqlalchemy import create_engine, inspect
+
+import app.main as main_module
 from app.db.session import SessionLocal
 from app.models.project import Project
 from app.services.projects import serialize_library_project, serialize_project
@@ -65,3 +70,39 @@ def test_project_and_library_serializers_include_languages_and_stage_statuses() 
         assert library_payload["transcript_status"] == "in_progress"
         assert library_payload["translation_status"] == "ready"
         assert library_payload["dubbing_status"] == "not_started"
+
+
+def test_ensure_project_schema_adds_missing_pipeline_columns_for_existing_projects_table(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "legacy-projects.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE projects (
+                id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                name VARCHAR(120) NOT NULL,
+                source_type VARCHAR(32) NOT NULL,
+                source_url VARCHAR(2048),
+                status VARCHAR(32) NOT NULL,
+                folder_id VARCHAR(64)
+            )
+            """
+        )
+        connection.commit()
+
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        main_module.ensure_project_schema(engine)
+        columns = {column["name"] for column in inspect(engine).get_columns("projects")}
+    finally:
+        engine.dispose()
+
+    assert {
+        "source_language",
+        "target_language",
+        "transcript_status",
+        "translation_status",
+        "dubbing_status",
+    }.issubset(columns)
