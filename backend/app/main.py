@@ -52,12 +52,6 @@ def ensure_project_schema(db_engine: Engine) -> None:
                     WHEN status = 'transcribing' THEN 'in_progress'
                     WHEN status = 'transcribed' THEN 'ready'
                     WHEN status = 'transcription_failed' THEN 'failed'
-                    WHEN status IN (
-                        'translation_queued',
-                        'translating',
-                        'translated',
-                        'translation_failed'
-                    ) THEN 'ready'
                     ELSE transcript_status
                 END
                 WHERE transcript_status = 'not_started'
@@ -65,33 +59,7 @@ def ensure_project_schema(db_engine: Engine) -> None:
                     'transcription_queued',
                     'transcribing',
                     'transcribed',
-                    'transcription_failed',
-                    'translation_queued',
-                    'translating',
-                    'translated',
-                    'translation_failed'
-                  )
-                """
-            )
-        )
-
-        connection.execute(
-            text(
-                """
-                UPDATE projects
-                SET translation_status = CASE
-                    WHEN status = 'translation_queued' THEN 'queued'
-                    WHEN status = 'translating' THEN 'in_progress'
-                    WHEN status = 'translated' THEN 'ready'
-                    WHEN status = 'translation_failed' THEN 'not_started'
-                    ELSE translation_status
-                END
-                WHERE translation_status = 'not_started'
-                  AND status IN (
-                    'translation_queued',
-                    'translating',
-                    'translated',
-                    'translation_failed'
+                    'transcription_failed'
                   )
                 """
             )
