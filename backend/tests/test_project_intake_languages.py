@@ -82,3 +82,65 @@ def test_explicit_non_default_target_language_is_preserved(client) -> None:
     detail = _project_detail(client, response.json()["project_id"])
     assert detail["source_language"] == "en"
     assert detail["target_language"] == "de"
+
+
+def test_non_default_source_without_target_stays_none_after_normalization(client) -> None:
+    response = client.post(
+        "/api/projects/import",
+        json={
+            "name": "Japanese URL",
+            "source_url": "https://example.com/video",
+            "source_language": " JA ",
+        },
+    )
+
+    assert response.status_code == 202
+    detail = _project_detail(client, response.json()["project_id"])
+    assert detail["source_language"] == "ja"
+    assert detail["target_language"] is None
+
+
+def test_blank_language_values_normalize_to_none(client) -> None:
+    response = client.post(
+        "/api/projects/upload",
+        data={
+            "name": "Blank languages",
+            "source_language": "   ",
+            "target_language": " ",
+        },
+        files={"file": ("clip.mp4", b"fake-video-bytes", "video/mp4")},
+    )
+
+    assert response.status_code == 202
+    detail = _project_detail(client, response.json()["project_id"])
+    assert detail["source_language"] is None
+    assert detail["target_language"] is None
+
+
+def test_uppercase_english_normalizes_and_keeps_default_target_rule(client) -> None:
+    response = client.post(
+        "/api/projects/import",
+        json={
+            "name": "Uppercase English",
+            "source_url": "https://example.com/video",
+            "source_language": " EN ",
+        },
+    )
+
+    assert response.status_code == 202
+    detail = _project_detail(client, response.json()["project_id"])
+    assert detail["source_language"] == "en"
+    assert detail["target_language"] == "pl"
+
+
+def test_absurdly_long_language_values_are_rejected(client) -> None:
+    response = client.post(
+        "/api/projects/import",
+        json={
+            "name": "Too long language",
+            "source_url": "https://example.com/video",
+            "source_language": "a" * 33,
+        },
+    )
+
+    assert response.status_code == 422

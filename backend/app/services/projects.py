@@ -22,6 +22,7 @@ from app.schemas.transcript import TranscriptChunk
 
 INGEST_QUEUE = "app.tasks.ingest.ingest_source"
 TRANSCRIBE_QUEUE = "app.tasks.ai.transcribe_project"
+LANGUAGE_CODE_MAX_LENGTH = 32
 
 
 def _resolve_target_language(source_language: str | None, target_language: str | None) -> str | None:
@@ -32,6 +33,21 @@ def _resolve_target_language(source_language: str | None, target_language: str |
     if source_language == "pl":
         return "en"
     return None
+
+
+def _normalize_language_code(language: str | None) -> str | None:
+    if language is None:
+        return None
+
+    normalized = language.strip().lower()
+    if not normalized:
+        return None
+    if len(normalized) > LANGUAGE_CODE_MAX_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Language code must be at most {LANGUAGE_CODE_MAX_LENGTH} characters",
+        )
+    return normalized
 
 
 def _serialize_segments(segments: list[TranscriptSegment]) -> list[TranscriptChunk]:
@@ -114,14 +130,17 @@ def create_project_with_job(
     target_language: str | None = None,
     status_value: str,
 ) -> JobStatusResponse:
+    normalized_source_language = _normalize_language_code(source_language)
+    normalized_target_language = _normalize_language_code(target_language)
+
     project = Project(
         id=str(uuid4()),
         owner_id="local-dev",
         name=name,
         source_type=source_type,
         source_url=source_url,
-        source_language=source_language,
-        target_language=_resolve_target_language(source_language, target_language),
+        source_language=normalized_source_language,
+        target_language=_resolve_target_language(normalized_source_language, normalized_target_language),
         status=status_value,
     )
     job = PipelineJob(
