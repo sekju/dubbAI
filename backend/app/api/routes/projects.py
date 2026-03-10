@@ -14,6 +14,7 @@ from app.services.projects import (
     list_projects,
 )
 from app.tasks.ai import transcribe_project as transcribe_project_task
+from app.tasks.ai import translate_project as translate_project_task
 
 router = APIRouter()
 
@@ -86,4 +87,14 @@ async def start_transcription(
 ) -> JobStatusResponse:
     job = create_job_for_project(db, project_id=project_id, queue="app.tasks.ai.transcribe_project")
     transcribe_project_task.delay(job.job_id, project_id)
+    return job
+
+
+@router.post("/{project_id}/translate", response_model=JobStatusResponse, status_code=status.HTTP_202_ACCEPTED)
+async def start_translation(
+    project_id: str,
+    db: Session = Depends(get_db),
+) -> JobStatusResponse:
+    job = create_job_for_project(db, project_id=project_id, queue="app.tasks.ai.translate_project")
+    translate_project_task.delay(job.job_id, project_id)
     return job

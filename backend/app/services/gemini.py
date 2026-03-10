@@ -79,6 +79,9 @@ class GeminiClient:
         candidate = data["candidates"][0]["content"]["parts"][0]["text"]
         return httpx.Response(200, text=candidate).json()
 
+    async def translate(self, audio_bytes: bytes, target_language: str = "pl") -> dict:
+        return await self.transcribe_translate(audio_bytes, target_language=target_language)
+
     async def synthesize_speech(self, text: str, voice_name: str) -> bytes:
         if not self.settings.gemini_api_key:
             return b""

@@ -22,6 +22,7 @@ from app.schemas.transcript import TranscriptChunk
 
 INGEST_QUEUE = "app.tasks.ingest.ingest_source"
 TRANSCRIBE_QUEUE = "app.tasks.ai.transcribe_project"
+TRANSLATE_QUEUE = "app.tasks.ai.translate_project"
 LANGUAGE_CODE_MAX_LENGTH = 32
 
 
@@ -168,6 +169,9 @@ def create_job_for_project(db: Session, *, project_id: str, queue: str) -> JobSt
     if queue == TRANSCRIBE_QUEUE:
         project.status = "transcription_queued"
         project.transcript_status = "queued"
+    if queue == TRANSLATE_QUEUE:
+        project.status = "translation_queued"
+        project.translation_status = "queued"
 
     job = PipelineJob(
         id=str(uuid4()),

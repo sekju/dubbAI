@@ -54,6 +54,22 @@ def _resolve_source_path(project: Project) -> Path:
     return Path(project.source_url)
 
 
+def _persist_segments(db, project: Project, segments: list[dict[str, object]]) -> None:
+    db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).delete()
+    for index, chunk in enumerate(parse_transcript_payload({"segments": segments})):
+        db.add(
+            TranscriptSegment(
+                id=f"{project.id}-{index}",
+                project_id=project.id,
+                speaker=chunk.speaker,
+                start_ms=chunk.start_ms,
+                end_ms=chunk.end_ms,
+                original_text=chunk.original_text,
+                translated_text=chunk.translated_text,
+            )
+        )
+
+
 @celery_app.task(name="app.tasks.ai.transcribe_project")
 def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
     settings = get_settings()
@@ -82,19 +98,7 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
         except Exception:
           segments = _fallback_segments(project.name)
 
-        db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).delete()
-        for index, chunk in enumerate(parse_transcript_payload({"segments": segments})):
-            db.add(
-                TranscriptSegment(
-                    id=f"{project.id}-{index}",
-                    project_id=project.id,
-                    speaker=chunk.speaker,
-                    start_ms=chunk.start_ms,
-                    end_ms=chunk.end_ms,
-                    original_text=chunk.original_text,
-                    translated_text=chunk.translated_text,
-                )
-            )
+        _persist_segments(db, project, segments)
 
         project.status = "transcribed"
         project.transcript_status = "ready"
@@ -111,6 +115,64 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
         if project:
             project.status = "transcription_failed"
             project.transcript_status = "failed"
+        db.commit()
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.ai.translate_project")
+def translate_project(job_id: str, project_id: str) -> dict[str, str]:
+    settings = get_settings()
+    db = SessionLocal()
+    try:
+        job = db.get(PipelineJob, job_id)
+        project = db.get(Project, project_id)
+        if not job or not project:
+            raise ValueError("Project or job not found")
+
+        job.state = "started"
+        job.progress = 10
+        project.status = "translating"
+        project.translation_status = "in_progress"
+        db.commit()
+
+        source_path = _resolve_source_path(project)
+        audio_path = settings.output_directory / project.id / "audio.wav"
+        extract_audio(source_path, audio_path)
+        job.progress = 45
+        db.commit()
+
+        try:
+          payload = asyncio.run(
+              GeminiClient().translate(
+                  audio_path.read_bytes(),
+                  target_language=project.target_language or "pl",
+              )
+          )
+          segments = payload.get("segments", []) or _fallback_segments(project.name)
+        except Exception:
+          segments = _fallback_segments(project.name)
+
+        _persist_segments(db, project, segments)
+
+        project.status = "translated"
+        if project.transcript_status == "not_started":
+            project.transcript_status = "ready"
+        project.translation_status = "ready"
+        job.state = "success"
+        job.progress = 100
+        db.commit()
+        return {"project_id": project.id, "status": "translated"}
+    except Exception:
+        job = db.get(PipelineJob, job_id)
+        project = db.get(Project, project_id)
+        if job:
+            job.state = "failure"
+            job.progress = 100
+        if project:
+            project.status = "translation_failed"
+            project.translation_status = "failed"
         db.commit()
         raise
     finally:
