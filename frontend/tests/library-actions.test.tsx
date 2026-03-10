@@ -1,5 +1,6 @@
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { LibraryShell } from "@/components/library/library-shell";
 import { useLibraryStore } from "@/store/use-library-store";
@@ -9,6 +10,9 @@ const createPlaylist = vi.fn();
 const assignProjectToFolder = vi.fn();
 const addProjectToPlaylist = vi.fn();
 const removeProject = vi.fn();
+const createProjectFromUpload = vi.fn();
+const createProjectFromUrl = vi.fn();
+const fetchLibrary = vi.fn();
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -19,7 +23,10 @@ vi.mock("@/lib/api", async () => {
     createPlaylist: (...args: unknown[]) => createPlaylist(...args),
     assignProjectToFolder: (...args: unknown[]) => assignProjectToFolder(...args),
     addProjectToPlaylist: (...args: unknown[]) => addProjectToPlaylist(...args),
-    deleteProject: (...args: unknown[]) => removeProject(...args)
+    deleteProject: (...args: unknown[]) => removeProject(...args),
+    createProjectFromUpload: (...args: unknown[]) => createProjectFromUpload(...args),
+    createProjectFromUrl: (...args: unknown[]) => createProjectFromUrl(...args),
+    fetchLibrary: (...args: unknown[]) => fetchLibrary(...args)
   };
 });
 
@@ -56,6 +63,9 @@ describe("Library actions", () => {
     assignProjectToFolder.mockReset();
     addProjectToPlaylist.mockReset();
     removeProject.mockReset();
+    createProjectFromUpload.mockReset();
+    createProjectFromUrl.mockReset();
+    fetchLibrary.mockReset();
 
     vi.spyOn(window, "prompt")
       .mockReturnValueOnce("Review Bin")
@@ -108,5 +118,85 @@ describe("Library actions", () => {
     fireEvent.click(screen.getByRole("button", { name: /delete project/i }));
     await waitFor(() => expect(removeProject).toHaveBeenCalledWith("project-1"));
     expect(screen.queryByText("Freepik 03")).not.toBeInTheDocument();
+  });
+
+  it("lets the user add projects from upload and URL inside the library view", async () => {
+    const user = userEvent.setup();
+
+    createProjectFromUpload.mockResolvedValue({
+      jobId: "job-upload",
+      projectId: "project-2",
+      state: "queued",
+      progress: 0,
+      queue: "ingest"
+    });
+    createProjectFromUrl.mockResolvedValue({
+      jobId: "job-url",
+      projectId: "project-3",
+      state: "queued",
+      progress: 0,
+      queue: "ingest"
+    });
+    fetchLibrary
+      .mockResolvedValueOnce({
+        ...sampleLibrary,
+        projects: [
+          ...sampleLibrary.projects,
+          {
+            id: "project-2",
+            name: "Upload clip",
+            status: "queued",
+            sourceType: "upload" as const,
+            sourceUrl: "/storage/uploads/project-2/video.mp4",
+            folderId: null
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        ...sampleLibrary,
+        projects: [
+          ...sampleLibrary.projects,
+          {
+            id: "project-2",
+            name: "Upload clip",
+            status: "queued",
+            sourceType: "upload" as const,
+            sourceUrl: "/storage/uploads/project-2/video.mp4",
+            folderId: null
+          },
+          {
+            id: "project-3",
+            name: "Remote clip",
+            status: "queued",
+            sourceType: "url" as const,
+            sourceUrl: "https://youtube.com/watch?v=abc",
+            folderId: null
+          }
+        ]
+      });
+
+    render(<LibraryShell initialData={sampleLibrary} />);
+
+    expect(screen.getByRole("button", { name: /add upload to library/i })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText(/project name/i), "Upload clip");
+    await user.upload(
+      screen.getByLabelText(/video file/i),
+      new File(["video"], "clip.mp4", { type: "video/mp4" })
+    );
+    await user.click(screen.getByRole("button", { name: /add upload to library/i }));
+
+    await waitFor(() => expect(createProjectFromUpload).toHaveBeenCalledWith("Upload clip", expect.any(File)));
+    expect(await screen.findByRole("button", { name: /select upload clip/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /remote ingest/i }));
+    await user.type(screen.getByLabelText(/project name/i), "Remote clip");
+    await user.type(screen.getByLabelText(/video url/i), "https://youtube.com/watch?v=abc");
+    await user.click(screen.getByRole("button", { name: /import link to library/i }));
+
+    await waitFor(() =>
+      expect(createProjectFromUrl).toHaveBeenCalledWith("Remote clip", "https://youtube.com/watch?v=abc")
+    );
+    expect(await screen.findByRole("button", { name: /select remote clip/i })).toBeInTheDocument();
   });
 });

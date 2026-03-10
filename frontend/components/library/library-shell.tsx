@@ -6,10 +6,14 @@ import {
   addProjectToPlaylist,
   assignProjectToFolder,
   createFolder,
+  createProjectFromUpload,
+  createProjectFromUrl,
   createPlaylist,
-  deleteProject
+  deleteProject,
+  fetchLibrary
 } from "@/lib/api";
 import type { LibraryData, LibraryPlaylist, LibraryProjectSummary } from "@/lib/types";
+import { ProjectIntakeForm } from "@/components/projects/project-intake-form";
 import { useLibraryStore } from "@/store/use-library-store";
 
 import { LibraryGrid } from "./library-grid";
@@ -168,6 +172,27 @@ export function LibraryShell({ initialData }: LibraryShellProps) {
     setSelectedProjectId(null);
   }
 
+  async function refreshLibrary(nextSelectedProjectId?: string) {
+    const nextLibrary = await fetchLibrary();
+    selectFolder(null);
+    selectPlaylist(null);
+    setLibraryData(nextLibrary);
+
+    if (nextSelectedProjectId) {
+      setSelectedProjectId(nextSelectedProjectId);
+    }
+  }
+
+  async function handleUploadProject(name: string, file: File) {
+    const job = await createProjectFromUpload(name, file);
+    await refreshLibrary(job.projectId);
+  }
+
+  async function handleImportProject(name: string, sourceUrl: string) {
+    const job = await createProjectFromUrl(name, sourceUrl);
+    await refreshLibrary(job.projectId);
+  }
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(82,209,198,0.22),transparent_24%),radial-gradient(circle_at_85%_12%,rgba(200,92,53,0.14),transparent_18%),linear-gradient(180deg,#f6efe2_0%,#edf3f7_100%)]">
       <div className="mx-auto grid max-w-7xl gap-5 px-5 py-6 lg:grid-cols-[280px_minmax(0,1fr)_340px] lg:px-8 lg:py-8">
@@ -181,11 +206,14 @@ export function LibraryShell({ initialData }: LibraryShellProps) {
           onSelectPlaylist={selectPlaylist}
           playlists={playlists}
         />
-        <LibraryGrid
-          onSelectProject={setSelectedProjectId}
-          projects={visibleProjects}
-          selectedProjectId={selectedProjectId}
-        />
+        <div className="space-y-5">
+          <ProjectIntakeForm onImportUrl={handleImportProject} onUploadFile={handleUploadProject} />
+          <LibraryGrid
+            onSelectProject={setSelectedProjectId}
+            projects={visibleProjects}
+            selectedProjectId={selectedProjectId}
+          />
+        </div>
         <LibraryInspector
           activeFolderId={activeFolderId}
           activePlaylistId={activePlaylistId}
