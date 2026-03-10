@@ -27,6 +27,11 @@ class LibraryProjectResponse(BaseModel):
     status: str
     source_type: str
     source_url: str | None = None
+    source_language: str | None = None
+    target_language: str | None = None
+    transcript_status: str = "not_started"
+    translation_status: str = "not_started"
+    dubbing_status: str = "not_started"
     folder_id: str | None = None
 
 

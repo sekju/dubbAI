@@ -12,7 +12,12 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(120))
     source_type: Mapped[str] = mapped_column(String(32))
     source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    source_language: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    target_language: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
     status: Mapped[str] = mapped_column(String(32), default="queued")
+    transcript_status: Mapped[str] = mapped_column(String(32), default="not_started")
+    translation_status: Mapped[str] = mapped_column(String(32), default="not_started")
+    dubbing_status: Mapped[str] = mapped_column(String(32), default="not_started")
     folder_id: Mapped[str | None] = mapped_column(ForeignKey("folders.id"), nullable=True, index=True)
 
     folder: Mapped["Folder | None"] = relationship(back_populates="projects")

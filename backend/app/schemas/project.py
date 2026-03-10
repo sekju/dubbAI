@@ -16,7 +16,12 @@ class ProjectResponse(BaseModel):
     name: str
     source_type: Literal["upload", "url"]
     source_url: str | None = None
+    source_language: str | None = None
+    target_language: str | None = None
     status: str
+    transcript_status: str = "not_started"
+    translation_status: str = "not_started"
+    dubbing_status: str = "not_started"
     transcript_segments: list[TranscriptChunk] = Field(default_factory=list)
 
 

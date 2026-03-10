@@ -49,7 +49,12 @@ def serialize_project(db: Session, project: Project) -> ProjectResponse:
         name=project.name,
         source_type=project.source_type,
         source_url=project.source_url,
+        source_language=project.source_language,
+        target_language=project.target_language,
         status=project.status,
+        transcript_status=project.transcript_status,
+        translation_status=project.translation_status,
+        dubbing_status=project.dubbing_status,
         transcript_segments=_serialize_segments(segments),
     )
 
@@ -61,6 +66,11 @@ def serialize_library_project(project: Project) -> LibraryProjectResponse:
         status=project.status,
         source_type=project.source_type,
         source_url=project.source_url,
+        source_language=project.source_language,
+        target_language=project.target_language,
+        transcript_status=project.transcript_status,
+        translation_status=project.translation_status,
+        dubbing_status=project.dubbing_status,
         folder_id=project.folder_id,
     )
 
