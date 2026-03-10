@@ -277,7 +277,7 @@ def test_translate_endpoint_requires_ready_transcript(client, monkeypatch) -> No
     delay_mock.assert_not_called()
 
 
-@pytest.mark.parametrize("translation_status", ["queued", "in_progress", "ready"])
+@pytest.mark.parametrize("translation_status", ["queued", "in_progress", "ready", "failed"])
 def test_translate_endpoint_rejects_when_translation_has_already_started(
     client,
     monkeypatch,
@@ -305,32 +305,6 @@ def test_translate_endpoint_rejects_when_translation_has_already_started(
     assert response.status_code == 409
     assert "Translation" in response.json()["detail"]
     delay_mock.assert_not_called()
-
-
-def test_translate_endpoint_allows_retry_after_failed_translation(client, monkeypatch) -> None:
-    delay_mock = Mock()
-    monkeypatch.setattr("app.api.routes.projects.translate_project_task.delay", delay_mock)
-
-    with SessionLocal() as db:
-        project = Project(
-            id="project-translate-failed",
-            owner_id="local-dev",
-            name="Translate failed",
-            source_type="upload",
-            source_url="/storage/uploads/project-translate-failed/clip.mp4",
-            status="transcribed",
-            transcript_status="ready",
-            translation_status="failed",
-        )
-        db.add(project)
-        db.commit()
-
-    response = client.post("/api/projects/project-translate-failed/translate")
-
-    assert response.status_code == 202
-    payload = response.json()
-    assert payload["queue"] == "app.tasks.ai.translate_project"
-    delay_mock.assert_called_once_with(payload["job_id"], "project-translate-failed")
 
 
 def test_translate_task_rejects_when_transcript_is_not_ready(tmp_path) -> None:
@@ -369,7 +343,7 @@ def test_translate_task_rejects_when_transcript_is_not_ready(tmp_path) -> None:
         assert saved_project is not None
         assert saved_project.status == "queued"
         assert saved_project.transcript_status == "not_started"
-        assert saved_project.translation_status == "failed"
+        assert saved_project.translation_status == "not_started"
         assert saved_segments == []
 
 

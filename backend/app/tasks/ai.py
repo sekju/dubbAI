@@ -240,7 +240,7 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
             job.state = "failure"
             job.progress = 100
         if project:
-            project.translation_status = "failed"
+            project.translation_status = "not_started"
         db.commit()
         raise
     except Exception:
@@ -250,7 +250,7 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
             job.state = "failure"
             job.progress = 100
         if project:
-            project.translation_status = "failed"
+            project.translation_status = "not_started"
         db.commit()
         raise
     finally:

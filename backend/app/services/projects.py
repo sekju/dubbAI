@@ -120,20 +120,15 @@ def _validate_pipeline_transition(project: Project, *, queue: str) -> None:
         return
 
     if queue == TRANSLATE_QUEUE:
-        if project.translation_status == "ready":
+        if project.translation_status != "not_started":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Translation is already complete for this project",
+                detail="Translation has already been started for this project",
             )
         if project.transcript_status != "ready":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Cannot start translation before transcription is ready",
-            )
-        if project.translation_status in ACTIVE_STAGE_STATUSES:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Translation is already queued or in progress",
             )
         if project.transcript_status in ACTIVE_STAGE_STATUSES:
             raise HTTPException(
