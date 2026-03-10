@@ -98,15 +98,11 @@ def _clear_translated_segments(db, project: Project) -> None:
     )
 
 
-def _invalidate_translation_state(project: Project) -> None:
-    project.translation_status = "not_started"
-
-
 def _ensure_transcription_job_can_start(project: Project) -> None:
     if project.transcript_status != "queued":
         raise StageConflictError("Transcription job is stale")
-    if project.translation_status in ACTIVE_STAGE_STATUSES:
-        raise StageConflictError("Cannot start transcription while translation is queued or in progress")
+    if project.translation_status != "not_started":
+        raise StageConflictError("Cannot start transcription after translation has started")
 
 
 def _ensure_translation_job_can_start(project: Project) -> None:
@@ -133,8 +129,6 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
             raise ValueError("Project or job not found")
 
         _ensure_transcription_job_can_start(project)
-        if project.translation_status != "not_started":
-            _invalidate_translation_state(project)
 
         job.state = "started"
         job.progress = 10

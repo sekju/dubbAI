@@ -112,23 +112,23 @@ def _validate_pipeline_transition(project: Project, *, queue: str) -> None:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Transcription is already queued or in progress",
             )
-        if project.translation_status in ACTIVE_STAGE_STATUSES:
+        if project.translation_status != "not_started":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Cannot start transcription while translation is queued or in progress",
+                detail="Cannot start transcription after translation has started",
             )
         return
 
     if queue == TRANSLATE_QUEUE:
+        if project.translation_status != "not_started":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Translation has already been started for this project",
+            )
         if project.transcript_status != "ready":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Cannot start translation before transcription is ready",
-            )
-        if project.translation_status in ACTIVE_STAGE_STATUSES:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Translation is already queued or in progress",
             )
         if project.transcript_status in ACTIVE_STAGE_STATUSES:
             raise HTTPException(
@@ -246,8 +246,6 @@ def create_job_for_project(db: Session, *, project_id: str, queue: str) -> JobSt
     if queue == TRANSCRIBE_QUEUE:
         project.status = "transcription_queued"
         project.transcript_status = "queued"
-        if project.translation_status != "not_started":
-            project.translation_status = "not_started"
     if queue == TRANSLATE_QUEUE:
         project.translation_status = "queued"
 

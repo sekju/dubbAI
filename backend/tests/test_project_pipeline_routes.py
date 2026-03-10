@@ -39,54 +39,6 @@ def test_transcribe_endpoint_sets_transcript_stage_to_queued(client, monkeypatch
     assert detail.json()["transcript_status"] == "queued"
 
 
-def test_retranscribe_queue_preserves_existing_translation_until_new_transcript_succeeds(
-    client,
-    monkeypatch,
-) -> None:
-    delay_mock = Mock()
-    monkeypatch.setattr("app.api.routes.projects.transcribe_project_task.delay", delay_mock)
-
-    with SessionLocal() as db:
-        project = Project(
-            id="project-retranscribe-queued",
-            owner_id="local-dev",
-            name="Retranscribe queued",
-            source_type="upload",
-            source_url="/storage/uploads/project-retranscribe-queued/clip.mp4",
-            status="transcribed",
-            transcript_status="ready",
-            translation_status="ready",
-        )
-        segment = TranscriptSegment(
-            id="segment-retranscribe-queued",
-            project_id=project.id,
-            speaker="Speaker A",
-            start_ms=0,
-            end_ms=1000,
-            original_text="Hello",
-            translated_text="Czesc",
-        )
-        db.add_all([project, segment])
-        db.commit()
-
-    response = client.post("/api/projects/project-retranscribe-queued/transcribe")
-
-    assert response.status_code == 202
-    delay_mock.assert_called_once()
-
-    detail = client.get("/api/projects/project-retranscribe-queued")
-
-    assert detail.status_code == 200
-    assert detail.json()["status"] == "transcription_queued"
-    assert detail.json()["translation_status"] == "not_started"
-    assert detail.json()["transcript_segments"][0]["translated_text"] == ""
-
-    with SessionLocal() as db:
-        saved_segment = db.get(TranscriptSegment, "segment-retranscribe-queued")
-        assert saved_segment is not None
-        assert saved_segment.translated_text == "Czesc"
-
-
 def test_translate_endpoint_sets_translation_stage_to_queued_without_changing_legacy_status(
     client,
     monkeypatch,
@@ -252,8 +204,8 @@ def test_transcription_only_completion_hides_translation_output_in_project_detai
     ]
 
 
-@pytest.mark.parametrize("translation_status", ["queued", "in_progress"])
-def test_transcribe_endpoint_rejects_when_translation_is_active(
+@pytest.mark.parametrize("translation_status", ["queued", "in_progress", "ready", "failed"])
+def test_transcribe_endpoint_rejects_when_translation_has_started(
     client,
     monkeypatch,
     translation_status: str,
@@ -325,6 +277,36 @@ def test_translate_endpoint_requires_ready_transcript(client, monkeypatch) -> No
     delay_mock.assert_not_called()
 
 
+@pytest.mark.parametrize("translation_status", ["queued", "in_progress", "ready", "failed"])
+def test_translate_endpoint_rejects_when_translation_has_already_started(
+    client,
+    monkeypatch,
+    translation_status: str,
+) -> None:
+    delay_mock = Mock()
+    monkeypatch.setattr("app.api.routes.projects.translate_project_task.delay", delay_mock)
+
+    with SessionLocal() as db:
+        project = Project(
+            id=f"project-translate-existing-{translation_status}",
+            owner_id="local-dev",
+            name="Translate existing",
+            source_type="upload",
+            source_url="/storage/uploads/project-translate-existing/clip.mp4",
+            status="transcribed",
+            transcript_status="ready",
+            translation_status=translation_status,
+        )
+        db.add(project)
+        db.commit()
+
+    response = client.post(f"/api/projects/project-translate-existing-{translation_status}/translate")
+
+    assert response.status_code == 409
+    assert "Translation has already been started" in response.json()["detail"]
+    delay_mock.assert_not_called()
+
+
 def test_translate_task_rejects_when_transcript_is_not_ready(tmp_path) -> None:
     source_path = tmp_path / "source.mp4"
     source_path.write_bytes(b"video")
@@ -363,49 +345,6 @@ def test_translate_task_rejects_when_transcript_is_not_ready(tmp_path) -> None:
         assert saved_project.transcript_status == "not_started"
         assert saved_project.translation_status == "queued"
         assert saved_segments == []
-
-
-def test_translate_retry_keeps_existing_translation_visible_while_queued(
-    client,
-    monkeypatch,
-) -> None:
-    delay_mock = Mock()
-    monkeypatch.setattr("app.api.routes.projects.translate_project_task.delay", delay_mock)
-
-    with SessionLocal() as db:
-        project = Project(
-            id="project-translate-retry",
-            owner_id="local-dev",
-            name="Translate retry",
-            source_type="upload",
-            source_url="/storage/uploads/project-translate-retry/clip.mp4",
-            status="transcribed",
-            transcript_status="ready",
-            translation_status="ready",
-        )
-        segment = TranscriptSegment(
-            id="segment-translate-retry",
-            project_id=project.id,
-            speaker="Speaker A",
-            start_ms=0,
-            end_ms=1000,
-            original_text="Hello",
-            translated_text="Czesc",
-        )
-        db.add_all([project, segment])
-        db.commit()
-
-    response = client.post("/api/projects/project-translate-retry/translate")
-
-    assert response.status_code == 202
-    delay_mock.assert_called_once()
-
-    detail = client.get("/api/projects/project-translate-retry")
-
-    assert detail.status_code == 200
-    assert detail.json()["status"] == "transcribed"
-    assert detail.json()["translation_status"] == "queued"
-    assert detail.json()["transcript_segments"][0]["translated_text"] == "Czesc"
 
 
 def test_translate_task_updates_existing_segments_without_replacing_transcript(monkeypatch) -> None:
@@ -477,98 +416,3 @@ def test_translate_task_updates_existing_segments_without_replacing_transcript(m
         assert saved_segment.end_ms == 950
         assert saved_segment.original_text == "Hello"
         assert saved_segment.translated_text == "Czesc"
-
-
-def test_retranscribe_task_invalidates_ready_translation_before_processing(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    source_path = tmp_path / "source.mp4"
-    source_path.write_bytes(b"video")
-    observed_statuses: list[tuple[str, str, str]] = []
-    observed_translated_texts: list[str] = []
-
-    with SessionLocal() as db:
-        project = Project(
-            id="project-retranscribe",
-            owner_id="local-dev",
-            name="Retranscribe project",
-            source_type="upload",
-            source_url=str(source_path),
-            status="transcription_queued",
-            transcript_status="queued",
-            translation_status="ready",
-        )
-        job = PipelineJob(
-            id="job-retranscribe",
-            project_id=project.id,
-            state="queued",
-            progress=0,
-            queue="app.tasks.ai.transcribe_project",
-        )
-        segment = TranscriptSegment(
-            id="segment-retranscribe",
-            project_id=project.id,
-            speaker="Speaker A",
-            start_ms=0,
-            end_ms=1000,
-            original_text="Old text",
-            translated_text="Stary tekst",
-        )
-        db.add_all([project, job, segment])
-        db.commit()
-
-    def fake_extract_audio(source, audio_path) -> None:
-        assert source == source_path
-        with SessionLocal() as verify_db:
-            verify_project = verify_db.get(Project, "project-retranscribe")
-            verify_segment = verify_db.get(TranscriptSegment, "segment-retranscribe")
-            assert verify_project is not None
-            assert verify_segment is not None
-            observed_statuses.append(
-                (
-                    verify_project.status,
-                    verify_project.transcript_status,
-                    verify_project.translation_status,
-                )
-            )
-            observed_translated_texts.append(verify_segment.translated_text)
-        audio_path.parent.mkdir(parents=True, exist_ok=True)
-        audio_path.write_bytes(b"audio")
-
-    class FakeGeminiClient:
-        async def transcribe_translate(self, audio_bytes: bytes) -> dict[str, object]:
-            assert audio_bytes == b"audio"
-            return {
-                "segments": [
-                    {
-                        "speaker": "Speaker B",
-                        "start_ms": 0,
-                        "end_ms": 1000,
-                        "original_text": "Fresh text",
-                        "translated_text": "Nowy tekst",
-                        "words": [],
-                    }
-                ]
-            }
-
-    monkeypatch.setattr("app.tasks.ai.extract_audio", fake_extract_audio)
-    monkeypatch.setattr("app.tasks.ai.GeminiClient", FakeGeminiClient)
-
-    result = transcribe_project("job-retranscribe", "project-retranscribe")
-
-    assert result == {"project_id": "project-retranscribe", "status": "transcribed"}
-    assert observed_statuses == [("transcribing", "in_progress", "not_started")]
-    assert observed_translated_texts == ["Stary tekst"]
-
-    with SessionLocal() as db:
-        saved_project = db.get(Project, "project-retranscribe")
-        saved_segments = db.query(TranscriptSegment).filter_by(project_id="project-retranscribe").all()
-
-        assert saved_project is not None
-        assert saved_project.status == "transcribed"
-        assert saved_project.transcript_status == "ready"
-        assert saved_project.translation_status == "not_started"
-        assert len(saved_segments) == 1
-        assert saved_segments[0].original_text == "Fresh text"
-        assert saved_segments[0].translated_text == ""
