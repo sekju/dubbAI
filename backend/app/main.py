@@ -43,6 +43,28 @@ def ensure_project_schema(db_engine: Engine) -> None:
             if column_name not in existing_columns:
                 connection.execute(text(ddl))
 
+        connection.execute(
+            text(
+                """
+                UPDATE projects
+                SET transcript_status = CASE
+                    WHEN status = 'transcription_queued' THEN 'queued'
+                    WHEN status = 'transcribing' THEN 'in_progress'
+                    WHEN status = 'transcribed' THEN 'ready'
+                    WHEN status = 'transcription_failed' THEN 'failed'
+                    ELSE transcript_status
+                END
+                WHERE transcript_status = 'not_started'
+                  AND status IN (
+                    'transcription_queued',
+                    'transcribing',
+                    'transcribed',
+                    'transcription_failed'
+                  )
+                """
+            )
+        )
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):

@@ -106,3 +106,61 @@ def test_ensure_project_schema_adds_missing_pipeline_columns_for_existing_projec
         "translation_status",
         "dubbing_status",
     }.issubset(columns)
+
+
+def test_ensure_project_schema_backfills_transcript_status_from_legacy_status(tmp_path) -> None:
+    db_path = tmp_path / "legacy-projects-backfill.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE projects (
+                id VARCHAR(64) PRIMARY KEY,
+                owner_id VARCHAR(64) NOT NULL,
+                name VARCHAR(120) NOT NULL,
+                source_type VARCHAR(32) NOT NULL,
+                source_url VARCHAR(2048),
+                status VARCHAR(32) NOT NULL,
+                folder_id VARCHAR(64)
+            )
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO projects (id, owner_id, name, source_type, source_url, status, folder_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("project-ready", "local-dev", "Ready", "upload", None, "transcribed", None),
+                (
+                    "project-failed",
+                    "local-dev",
+                    "Failed",
+                    "upload",
+                    None,
+                    "transcription_failed",
+                    None,
+                ),
+            ],
+        )
+        connection.commit()
+
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        main_module.ensure_project_schema(engine)
+        with engine.connect() as connection:
+            rows = connection.execute(
+                main_module.text(
+                    """
+                    SELECT id, transcript_status, translation_status, dubbing_status
+                    FROM projects
+                    ORDER BY id
+                    """
+                )
+            ).fetchall()
+    finally:
+        engine.dispose()
+
+    assert rows == [
+        ("project-failed", "failed", "not_started", "not_started"),
+        ("project-ready", "ready", "not_started", "not_started"),
+    ]
