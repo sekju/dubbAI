@@ -51,14 +51,18 @@ def _normalize_language_code(language: str | None) -> str | None:
     return normalized
 
 
-def _serialize_segments(segments: list[TranscriptSegment]) -> list[TranscriptChunk]:
+def _serialize_segments(
+    segments: list[TranscriptSegment],
+    *,
+    include_translation: bool,
+) -> list[TranscriptChunk]:
     return [
         TranscriptChunk(
             speaker=segment.speaker,
             start_ms=segment.start_ms,
             end_ms=segment.end_ms,
             original_text=segment.original_text,
-            translated_text=segment.translated_text,
+            translated_text=segment.translated_text if include_translation else "",
             words=[],
         )
         for segment in segments
@@ -82,7 +86,10 @@ def serialize_project(db: Session, project: Project) -> ProjectResponse:
         transcript_status=project.transcript_status,
         translation_status=project.translation_status,
         dubbing_status=project.dubbing_status,
-        transcript_segments=_serialize_segments(segments),
+        transcript_segments=_serialize_segments(
+            segments,
+            include_translation=project.translation_status == "ready",
+        ),
     )
 
 

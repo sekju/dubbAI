@@ -54,7 +54,13 @@ def _resolve_source_path(project: Project) -> Path:
     return Path(project.source_url)
 
 
-def _persist_segments(db, project: Project, segments: list[dict[str, object]]) -> None:
+def _persist_segments(
+    db,
+    project: Project,
+    segments: list[dict[str, object]],
+    *,
+    include_translation: bool,
+) -> None:
     db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).delete()
     for index, chunk in enumerate(parse_transcript_payload({"segments": segments})):
         db.add(
@@ -65,7 +71,7 @@ def _persist_segments(db, project: Project, segments: list[dict[str, object]]) -
                 start_ms=chunk.start_ms,
                 end_ms=chunk.end_ms,
                 original_text=chunk.original_text,
-                translated_text=chunk.translated_text,
+                translated_text=chunk.translated_text if include_translation else "",
             )
         )
 
@@ -98,7 +104,7 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
         except Exception:
           segments = _fallback_segments(project.name)
 
-        _persist_segments(db, project, segments)
+        _persist_segments(db, project, segments, include_translation=False)
 
         project.status = "transcribed"
         project.transcript_status = "ready"
@@ -154,11 +160,9 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
         except Exception:
           segments = _fallback_segments(project.name)
 
-        _persist_segments(db, project, segments)
+        _persist_segments(db, project, segments, include_translation=True)
 
         project.status = "translated"
-        if project.transcript_status == "not_started":
-            project.transcript_status = "ready"
         project.translation_status = "ready"
         job.state = "success"
         job.progress = 100
