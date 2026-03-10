@@ -98,6 +98,26 @@ def _legacy_compatible_status(project: Project) -> str:
     return "queued"
 
 
+def _derive_library_next_action(project: Project) -> str:
+    if "failed" in {
+        project.transcript_status,
+        project.translation_status,
+        project.dubbing_status,
+    }:
+        return "retry"
+
+    if project.transcript_status == "not_started":
+        return "transcribe"
+
+    if project.transcript_status in ACTIVE_STAGE_STATUSES:
+        return "open_theater"
+
+    if project.translation_status == "not_started":
+        return "translate"
+
+    return "open_theater"
+
+
 def _clear_translated_segments(db: Session, project: Project) -> None:
     db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).update(
         {TranscriptSegment.translated_text: ""},
@@ -173,6 +193,7 @@ def serialize_library_project(project: Project) -> LibraryProjectResponse:
         transcript_status=project.transcript_status,
         translation_status=project.translation_status,
         dubbing_status=project.dubbing_status,
+        next_action=_derive_library_next_action(project),
         folder_id=project.folder_id,
     )
 

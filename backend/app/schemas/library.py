@@ -32,6 +32,7 @@ class LibraryProjectResponse(BaseModel):
     transcript_status: str = "not_started"
     translation_status: str = "not_started"
     dubbing_status: str = "not_started"
+    next_action: str
     folder_id: str | None = None
 
 
