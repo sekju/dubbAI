@@ -4,10 +4,19 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.folder import Folder
 from app.models.job import PipelineJob
+from app.models.playlist import Playlist, PlaylistItem
 from app.models.project import Project
 from app.models.transcript import TranscriptSegment
 from app.schemas.job import JobStatusResponse
+from app.schemas.library import (
+    FolderResponse,
+    LibraryProjectResponse,
+    LibraryResponse,
+    PlaylistItemResponse,
+    PlaylistResponse,
+)
 from app.schemas.project import ProjectResponse
 from app.schemas.transcript import TranscriptChunk
 
@@ -42,6 +51,36 @@ def serialize_project(db: Session, project: Project) -> ProjectResponse:
         source_url=project.source_url,
         status=project.status,
         transcript_segments=_serialize_segments(segments),
+    )
+
+
+def serialize_library_project(project: Project) -> LibraryProjectResponse:
+    return LibraryProjectResponse(
+        id=project.id,
+        name=project.name,
+        status=project.status,
+        source_type=project.source_type,
+        source_url=project.source_url,
+        folder_id=project.folder_id,
+    )
+
+
+def serialize_folder(folder: Folder) -> FolderResponse:
+    return FolderResponse(
+        id=folder.id,
+        name=folder.name,
+        project_ids=[project.id for project in sorted(folder.projects, key=lambda project: project.name)],
+    )
+
+
+def serialize_playlist(playlist: Playlist) -> PlaylistResponse:
+    return PlaylistResponse(
+        id=playlist.id,
+        name=playlist.name,
+        items=[
+            PlaylistItemResponse(project_id=item.project_id, position=item.position)
+            for item in playlist.items
+        ],
     )
 
 
@@ -110,6 +149,17 @@ def list_projects(db: Session) -> list[ProjectResponse]:
     return [serialize_project(db, project) for project in projects]
 
 
+def get_library_data(db: Session) -> LibraryResponse:
+    folders = db.scalars(select(Folder).order_by(Folder.name.asc())).all()
+    playlists = db.scalars(select(Playlist).order_by(Playlist.name.asc())).all()
+    projects = db.scalars(select(Project).order_by(Project.name.asc())).all()
+    return LibraryResponse(
+        folders=[serialize_folder(folder) for folder in folders],
+        playlists=[serialize_playlist(playlist) for playlist in playlists],
+        projects=[serialize_library_project(project) for project in projects],
+    )
+
+
 def get_project_or_404(db: Session, project_id: str) -> ProjectResponse:
     project = db.get(Project, project_id)
     if not project:
@@ -122,6 +172,111 @@ def get_project_model_or_404(db: Session, project_id: str) -> Project:
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
+
+
+def get_folder_model_or_404(db: Session, folder_id: str) -> Folder:
+    folder = db.get(Folder, folder_id)
+    if not folder:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+    return folder
+
+
+def get_playlist_model_or_404(db: Session, playlist_id: str) -> Playlist:
+    playlist = db.get(Playlist, playlist_id)
+    if not playlist:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playlist not found")
+    return playlist
+
+
+def create_folder(db: Session, *, name: str) -> FolderResponse:
+    folder = Folder(id=str(uuid4()), owner_id="local-dev", name=name)
+    db.add(folder)
+    db.commit()
+    db.refresh(folder)
+    return serialize_folder(folder)
+
+
+def create_playlist(db: Session, *, name: str) -> PlaylistResponse:
+    playlist = Playlist(id=str(uuid4()), owner_id="local-dev", name=name)
+    db.add(playlist)
+    db.commit()
+    db.refresh(playlist)
+    return serialize_playlist(playlist)
+
+
+def assign_project_to_folder(db: Session, *, project_id: str, folder_id: str) -> LibraryProjectResponse:
+    project = get_project_model_or_404(db, project_id)
+    get_folder_model_or_404(db, folder_id)
+    project.folder_id = folder_id
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return serialize_library_project(project)
+
+
+def add_project_to_playlist(db: Session, *, playlist_id: str, project_id: str) -> PlaylistResponse:
+    playlist = get_playlist_model_or_404(db, playlist_id)
+    get_project_model_or_404(db, project_id)
+    db.add(PlaylistItem(playlist_id=playlist_id, project_id=project_id, position=len(playlist.items) + 1))
+    db.commit()
+    db.refresh(playlist)
+    return serialize_playlist(playlist)
+
+
+def reorder_playlist_items(db: Session, *, playlist_id: str, project_ids: list[str]) -> PlaylistResponse:
+    playlist = get_playlist_model_or_404(db, playlist_id)
+    items_by_project = {item.project_id: item for item in playlist.items}
+
+    for position, project_id in enumerate(project_ids, start=1):
+        item = items_by_project.get(project_id)
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playlist item not found")
+        item.position = position
+        db.add(item)
+
+    db.commit()
+    db.refresh(playlist)
+    return serialize_playlist(playlist)
+
+
+def remove_project_from_playlist(db: Session, *, playlist_id: str, project_id: str) -> None:
+    playlist = get_playlist_model_or_404(db, playlist_id)
+    item_to_delete = next((item for item in playlist.items if item.project_id == project_id), None)
+    if item_to_delete is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playlist item not found")
+
+    db.delete(item_to_delete)
+    db.flush()
+
+    remaining_items = sorted(
+        (item for item in playlist.items if item.project_id != project_id),
+        key=lambda item: item.position,
+    )
+    for position, item in enumerate(remaining_items, start=1):
+        item.position = position
+        db.add(item)
+
+    db.commit()
+
+
+def delete_project(db: Session, *, project_id: str) -> None:
+    project = get_project_model_or_404(db, project_id)
+
+    for playlist_item in db.scalars(
+        select(PlaylistItem).where(PlaylistItem.project_id == project_id)
+    ).all():
+        db.delete(playlist_item)
+
+    for transcript_segment in db.scalars(
+        select(TranscriptSegment).where(TranscriptSegment.project_id == project_id)
+    ).all():
+        db.delete(transcript_segment)
+
+    for job in db.scalars(select(PipelineJob).where(PipelineJob.project_id == project_id)).all():
+        db.delete(job)
+
+    db.delete(project)
+    db.commit()
 
 
 def get_job_or_404(db: Session, job_id: str) -> JobStatusResponse:

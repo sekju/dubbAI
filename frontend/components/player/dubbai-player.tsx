@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useRef } from "react";
 
 import type { TranscriptCue } from "@/lib/types";
 import { usePlayerStore, type SubtitleMode } from "@/store/use-player-store";
@@ -10,13 +10,16 @@ type DubbAIPlayerProps = {
   src: string;
   dubbingSrc?: string | null;
   cues: TranscriptCue[];
+  onAutoplayNext?: () => void;
 };
 
 const densityOptions = [
-  { value: "compact", label: "Compact", description: "3 words" },
-  { value: "balanced", label: "Balanced", description: "6 words" },
-  { value: "sentence", label: "Sentence", description: "Full line" }
+  { value: "compact", label: "Compact" },
+  { value: "balanced", label: "Balanced" },
+  { value: "sentence", label: "Sentence" }
 ] as const;
+
+const playbackRates = [1, 1.25, 1.5] as const;
 
 const subtitleModes: Array<{ value: SubtitleMode; label: string }> = [
   { value: "dual", label: "Dual" },
@@ -40,11 +43,8 @@ function getWordLimit(density: "compact" | "balanced" | "sentence"): number {
 
 function truncateSubtitle(text: string, density: "compact" | "balanced" | "sentence"): string {
   const words = text.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) {
-    return text;
-  }
-
   const limit = getWordLimit(density);
+
   if (limit === Number.POSITIVE_INFINITY || words.length <= limit) {
     return words.join(" ");
   }
@@ -56,44 +56,42 @@ function formatTimestamp(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
+
   return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function buildKaraokeWords(cue: TranscriptCue | undefined) {
-  if (!cue) {
-    return [];
-  }
-
-  if (cue.words.length > 0) {
-    return cue.words;
-  }
-
-  const translatedWords = cue.translatedText.trim().split(/\s+/).filter(Boolean);
-  return translatedWords.map((word, index) => ({
-    text: word,
-    startMs: cue.startMs + index * 120,
-    endMs: cue.startMs + index * 120 + 100
-  }));
-}
-
-export function DubbAIPlayer({ src, dubbingSrc = null, cues }: DubbAIPlayerProps) {
+export function DubbAIPlayer({
+  src,
+  dubbingSrc = null,
+  cues,
+  onAutoplayNext
+}: DubbAIPlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const dubbingRef = useRef<HTMLAudioElement | null>(null);
+  const hideOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const {
     density,
     subtitleMode,
-    transcriptPanelOpen,
-    karaokeEnabled,
-    originalVolume,
-    dubbingVolume,
     currentTimeMs,
+    durationMs,
+    isPlaying,
+    volume,
+    playbackRate,
+    autoplay,
+    isFullscreen,
+    overlayVisible,
+    settingsOpen,
     setDensity,
     setSubtitleMode,
-    toggleTranscriptPanel,
-    toggleKaraoke,
-    setOriginalVolume,
-    setDubbingVolume,
-    setCurrentTimeMs
+    setCurrentTimeMs,
+    setDurationMs,
+    setIsPlaying,
+    setVolume,
+    setPlaybackRate,
+    toggleAutoplay,
+    toggleFullscreen,
+    setOverlayVisible,
+    toggleSettingsOpen
   } = usePlayerStore();
 
   const activeCue = getActiveCue(cues, currentTimeMs);
@@ -102,16 +100,83 @@ export function DubbAIPlayer({ src, dubbingSrc = null, cues }: DubbAIPlayerProps
     density
   );
   const originalLine = truncateSubtitle(activeCue?.originalText ?? "Original subtitles", density);
-  const karaokeWords = useMemo(() => buildKaraokeWords(activeCue), [activeCue]);
+
+  function clearOverlayTimer() {
+    if (hideOverlayTimerRef.current) {
+      clearTimeout(hideOverlayTimerRef.current);
+      hideOverlayTimerRef.current = null;
+    }
+  }
+
+  function scheduleOverlayHide() {
+    clearOverlayTimer();
+    hideOverlayTimerRef.current = setTimeout(() => {
+      setOverlayVisible(false);
+    }, 2500);
+  }
+
+  function showOverlay() {
+    setOverlayVisible(true);
+    scheduleOverlayHide();
+  }
+
+  function syncDubbingTime() {
+    const video = videoRef.current;
+    const dubbing = dubbingRef.current;
+
+    if (!video || !dubbing) {
+      return;
+    }
+
+    if (Math.abs(dubbing.currentTime - video.currentTime) > 0.25) {
+      dubbing.currentTime = video.currentTime;
+    }
+  }
+
+  function seekBy(msDelta: number) {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+
+    const nextTimeMs = Math.max(0, currentTimeMs + msDelta);
+    video.currentTime = nextTimeMs / 1000;
+    if (dubbingRef.current) {
+      dubbingRef.current.currentTime = video.currentTime;
+    }
+    setCurrentTimeMs(nextTimeMs);
+    showOverlay();
+  }
+
+  function togglePlayback() {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+
+    if (isPlaying) {
+      video.pause();
+      dubbingRef.current?.pause();
+      setIsPlaying(false);
+    } else {
+      void video.play().catch(() => undefined);
+      if (dubbingRef.current) {
+        dubbingRef.current.currentTime = video.currentTime;
+        void dubbingRef.current.play().catch(() => undefined);
+      }
+      setIsPlaying(true);
+    }
+
+    showOverlay();
+  }
 
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.volume = originalVolume / 100;
-    }
-    if (dubbingRef.current) {
-      dubbingRef.current.volume = dubbingVolume / 100;
-    }
-  }, [dubbingVolume, originalVolume]);
+    showOverlay();
+
+    return () => {
+      clearOverlayTimer();
+    };
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -121,320 +186,311 @@ export function DubbAIPlayer({ src, dubbingSrc = null, cues }: DubbAIPlayerProps
       return;
     }
 
-    const syncAudioClock = () => {
-      if (!dubbing) {
-        return;
-      }
+    video.volume = volume / 100;
+    video.playbackRate = playbackRate;
 
-      if (Math.abs(dubbing.currentTime - video.currentTime) > 0.25) {
-        dubbing.currentTime = video.currentTime;
-      }
+    if (dubbing) {
+      dubbing.volume = volume / 100;
+      dubbing.playbackRate = playbackRate;
+    }
+  }, [playbackRate, volume]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+
+    if (!video) {
+      return;
+    }
+
+    const handleLoadedMetadata = () => {
+      const seconds = Number.isFinite(video.duration) ? video.duration : 0;
+      setDurationMs(Math.floor(seconds * 1000));
     };
 
     const handleTimeUpdate = () => {
       setCurrentTimeMs(Math.floor(video.currentTime * 1000));
-      syncAudioClock();
+      syncDubbingTime();
     };
 
     const handlePlay = () => {
-      if (!dubbing) {
-        return;
-      }
-
-      dubbing.currentTime = video.currentTime;
-      void dubbing.play().catch(() => undefined);
+      setIsPlaying(true);
+      showOverlay();
     };
 
     const handlePause = () => {
-      dubbing?.pause();
+      setIsPlaying(false);
+      setOverlayVisible(true);
     };
 
-    const handleSeeking = () => {
-      syncAudioClock();
-      setCurrentTimeMs(Math.floor(video.currentTime * 1000));
-    };
-
-    const handleRateChange = () => {
-      if (dubbing) {
-        dubbing.playbackRate = video.playbackRate;
+    const handleEnded = () => {
+      setIsPlaying(false);
+      setOverlayVisible(true);
+      if (autoplay) {
+        onAutoplayNext?.();
       }
     };
 
+    video.addEventListener("loadedmetadata", handleLoadedMetadata);
     video.addEventListener("timeupdate", handleTimeUpdate);
     video.addEventListener("play", handlePlay);
     video.addEventListener("pause", handlePause);
-    video.addEventListener("seeking", handleSeeking);
-    video.addEventListener("ratechange", handleRateChange);
+    video.addEventListener("ended", handleEnded);
 
     return () => {
+      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
       video.removeEventListener("timeupdate", handleTimeUpdate);
       video.removeEventListener("play", handlePlay);
       video.removeEventListener("pause", handlePause);
-      video.removeEventListener("seeking", handleSeeking);
-      video.removeEventListener("ratechange", handleRateChange);
+      video.removeEventListener("ended", handleEnded);
     };
-  }, [dubbingSrc, setCurrentTimeMs]);
+  }, [autoplay, onAutoplayNext, setCurrentTimeMs, setDurationMs, setIsPlaying, setOverlayVisible]);
 
-  function jumpToCue(startMs: number) {
-    const targetSeconds = startMs / 1000;
-    if (videoRef.current) {
-      videoRef.current.currentTime = targetSeconds;
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const key = event.key.toLowerCase();
+
+      if (key === " " || key === "k") {
+        event.preventDefault();
+        togglePlayback();
+        return;
+      }
+      if (key === "j") {
+        seekBy(-15000);
+        return;
+      }
+      if (key === "l") {
+        seekBy(15000);
+        return;
+      }
+      if (key === "arrowleft") {
+        seekBy(-5000);
+        return;
+      }
+      if (key === "arrowright") {
+        seekBy(5000);
+        return;
+      }
+      if (key === "arrowup") {
+        setVolume(Math.min(volume + 5, 100));
+        showOverlay();
+        return;
+      }
+      if (key === "arrowdown") {
+        setVolume(Math.max(volume - 5, 0));
+        showOverlay();
+        return;
+      }
+      if (key === "f") {
+        toggleFullscreen();
+        showOverlay();
+      }
     }
-    if (dubbingRef.current) {
-      dubbingRef.current.currentTime = targetSeconds;
-    }
-    setCurrentTimeMs(startMs);
-  }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isPlaying, setVolume, toggleFullscreen, volume]);
 
   return (
-    <section className="overflow-hidden rounded-[2rem] border border-black/10 bg-[#0a1016] text-white shadow-[0_35px_80px_rgba(10,16,22,0.18)]">
-      <div className="border-b border-white/10 bg-[linear-gradient(135deg,rgba(8,13,18,0.98),rgba(22,37,52,0.98))] px-5 py-4 xl:px-6">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-          <div className="space-y-2">
-            <p className="text-[11px] uppercase tracking-[0.38em] text-aqua/90">Cinema Workspace</p>
-            <div className="flex flex-wrap items-center gap-2 text-sm text-fog/80">
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                {cues.length} subtitle segments
-              </span>
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                {formatTimestamp(currentTimeMs)}
-              </span>
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                {transcriptPanelOpen ? "Transcript panel on" : "Transcript panel off"}
-              </span>
-            </div>
-          </div>
+    <section
+      className={clsx(
+        "overflow-hidden rounded-[2rem] border border-black/10 bg-[#0a1016] text-white shadow-[0_35px_80px_rgba(10,16,22,0.18)]",
+        isFullscreen ? "ring-1 ring-aqua/35" : ""
+      )}
+    >
+      <div className="relative overflow-hidden rounded-[1.75rem] bg-black">
+        <video
+          className="aspect-video w-full bg-black object-contain"
+          onMouseMove={showOverlay}
+          ref={videoRef}
+          src={src}
+        />
+        {dubbingSrc ? <audio className="hidden" ref={dubbingRef} src={dubbingSrc} /> : null}
 
-          <div className="flex flex-wrap gap-2">
-            {subtitleModes.map((option) => (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/70 to-transparent px-5 pb-24 pt-20 md:px-7">
+          {subtitleMode !== "original" ? (
+            <p className="max-w-4xl text-[clamp(1.5rem,3vw,2.75rem)] font-semibold leading-tight tracking-[-0.03em] text-[#f5f1e8]">
+              {translatedLine}
+            </p>
+          ) : null}
+          {subtitleMode !== "translation" ? (
+            <p className="mt-2 max-w-3xl text-sm uppercase tracking-[0.26em] text-white/72 md:text-base">
+              {originalLine}
+            </p>
+          ) : null}
+        </div>
+
+        <div
+          className={clsx(
+            "absolute inset-x-0 bottom-0 transition-opacity duration-200",
+            overlayVisible ? "opacity-100" : "opacity-0"
+          )}
+          data-state={overlayVisible ? "visible" : "hidden"}
+          data-testid="player-overlay"
+        >
+          <div className="bg-gradient-to-t from-black via-black/88 to-transparent px-4 pb-4 pt-10 md:px-6">
+            <div className="mb-3 flex items-center justify-between text-xs uppercase tracking-[0.24em] text-fog/70">
+              <span>{cues.length} cues</span>
+              <span>{formatTimestamp(currentTimeMs)} / {formatTimestamp(durationMs)}</span>
+            </div>
+
+            <div className="mb-4 flex items-center gap-3">
+              <input
+                aria-label="Timeline"
+                className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/15 accent-aqua"
+                max={Math.max(durationMs, currentTimeMs, 1)}
+                min={0}
+                onChange={(event) => {
+                  const nextTimeMs = Number(event.target.value);
+                  if (videoRef.current) {
+                    videoRef.current.currentTime = nextTimeMs / 1000;
+                  }
+                  setCurrentTimeMs(nextTimeMs);
+                  showOverlay();
+                }}
+                type="range"
+                value={Math.min(currentTimeMs, Math.max(durationMs, currentTimeMs, 1))}
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
               <button
-                aria-pressed={subtitleMode === option.value}
-                className={clsx(
-                  "rounded-full border px-4 py-2 text-sm font-semibold transition",
-                  subtitleMode === option.value
-                    ? "border-aqua bg-aqua text-ink"
-                    : "border-white/12 bg-white/5 text-fog hover:border-white/25 hover:bg-white/10"
-                )}
-                key={option.value}
-                onClick={() => setSubtitleMode(option.value)}
+                className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-ink transition hover:bg-sand"
+                onClick={togglePlayback}
                 type="button"
               >
-                {option.label}
+                {isPlaying ? "Pause" : "Play"}
               </button>
-            ))}
-            <button
-              aria-pressed={karaokeEnabled}
-              className={clsx(
-                "rounded-full border px-4 py-2 text-sm font-semibold transition",
-                karaokeEnabled
-                  ? "border-white/20 bg-white/12 text-white"
-                  : "border-white/12 bg-transparent text-fog"
-              )}
-              onClick={toggleKaraoke}
-              type="button"
-            >
-              Karaoke
-            </button>
-            <button
-              aria-pressed={transcriptPanelOpen}
-              className={clsx(
-                "rounded-full border px-4 py-2 text-sm font-semibold transition",
-                transcriptPanelOpen
-                  ? "border-white/20 bg-white/12 text-white"
-                  : "border-white/12 bg-transparent text-fog"
-              )}
-              onClick={toggleTranscriptPanel}
-              type="button"
-            >
-              Transcript
-            </button>
+              <button
+                className="rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+                onClick={() => seekBy(-15000)}
+                type="button"
+              >
+                -15s
+              </button>
+              <button
+                className="rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+                onClick={() => seekBy(15000)}
+                type="button"
+              >
+                +15s
+              </button>
+              <label className="flex items-center gap-2 text-sm text-fog/80">
+                <span>Volume</span>
+                <input
+                  aria-label="Volume"
+                  className="h-2 w-28 cursor-pointer appearance-none rounded-full bg-white/15 accent-ember"
+                  max={100}
+                  min={0}
+                  onChange={(event) => setVolume(Number(event.target.value))}
+                  type="range"
+                  value={volume}
+                />
+              </label>
+              <button
+                className="rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+                onClick={() => {
+                  toggleFullscreen();
+                  showOverlay();
+                }}
+                type="button"
+              >
+                Fullscreen
+              </button>
+              <button
+                className="rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+                onClick={toggleSettingsOpen}
+                type="button"
+              >
+                Settings
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
-      <div
-        className={clsx(
-          "grid gap-6 p-4 xl:p-6",
-          transcriptPanelOpen ? "xl:grid-cols-[minmax(0,1.65fr)_360px]" : "xl:grid-cols-1"
-        )}
-      >
-        <div className="space-y-4">
-          <div className="relative overflow-hidden rounded-[1.75rem] border border-white/10 bg-black">
-            <video
-              className="aspect-video w-full bg-black object-contain"
-              controls
-              ref={videoRef}
-              src={src}
-            />
-            {dubbingSrc ? <audio className="hidden" ref={dubbingRef} src={dubbingSrc} /> : null}
-
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/70 to-transparent px-5 pb-5 pt-20 md:px-7 md:pb-7">
-              {subtitleMode !== "original" ? (
-                <p className="max-w-4xl text-[clamp(1.5rem,3vw,2.75rem)] font-semibold leading-tight tracking-[-0.03em] text-[#f5f1e8] drop-shadow-[0_6px_30px_rgba(0,0,0,0.9)]">
-                  {translatedLine}
-                </p>
-              ) : null}
-              {subtitleMode !== "translation" ? (
-                <p className="mt-2 max-w-3xl text-sm uppercase tracking-[0.26em] text-white/72 md:text-base">
-                  {originalLine}
-                </p>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-            <section className="rounded-[1.5rem] border border-white/10 bg-white/5 p-4">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.3em] text-aqua/80">Subtitle density</p>
-                  <h2 className="text-xl font-semibold text-[#f5f1e8]">Readable on screen</h2>
-                </div>
-                <p className="text-sm text-fog/70">Buttons now change rendered lines.</p>
+      {settingsOpen ? (
+        <div className="border-t border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.06),rgba(255,255,255,0.02))] px-5 py-5">
+          <div className="grid gap-5 lg:grid-cols-3">
+            <section className="space-y-3">
+              <p className="text-xs uppercase tracking-[0.28em] text-aqua/80">Subtitles</p>
+              <div className="flex flex-wrap gap-2">
+                {subtitleModes.map((mode) => (
+                  <button
+                    className={clsx(
+                      "rounded-full border px-4 py-2 text-sm font-semibold transition",
+                      subtitleMode === mode.value
+                        ? "border-aqua bg-aqua text-ink"
+                        : "border-white/12 bg-white/5 text-fog hover:bg-white/10"
+                    )}
+                    key={mode.value}
+                    onClick={() => setSubtitleMode(mode.value)}
+                    type="button"
+                  >
+                    {mode.label}
+                  </button>
+                ))}
               </div>
-
-              <div className="grid gap-3 md:grid-cols-3">
+              <div className="flex flex-wrap gap-2">
                 {densityOptions.map((option) => (
                   <button
-                    aria-pressed={density === option.value}
                     className={clsx(
-                      "rounded-[1.25rem] border px-4 py-3 text-left transition",
+                      "rounded-full border px-4 py-2 text-sm font-semibold transition",
                       density === option.value
-                        ? "border-aqua bg-aqua/90 text-ink"
-                        : "border-white/10 bg-black/20 text-white hover:border-white/25 hover:bg-white/10"
+                        ? "border-ember bg-ember text-white"
+                        : "border-white/12 bg-white/5 text-fog hover:bg-white/10"
                     )}
                     key={option.value}
                     onClick={() => setDensity(option.value)}
                     type="button"
                   >
-                    <span className="block text-sm font-semibold">{option.label}</span>
-                    <span className="mt-1 block text-xs opacity-75">{option.description}</span>
+                    {option.label}
                   </button>
                 ))}
               </div>
             </section>
 
-            <section className="rounded-[1.5rem] border border-white/10 bg-white/5 p-4">
-              <div className="mb-4">
-                <p className="text-xs uppercase tracking-[0.3em] text-aqua/80">Live mix</p>
-                <h2 className="text-xl font-semibold text-[#f5f1e8]">Audio control</h2>
-              </div>
-
-              <div className="space-y-4">
-                <label className="block space-y-2 text-sm text-fog">
-                  <div className="flex items-center justify-between">
-                    <span>Original volume</span>
-                    <span className="text-white">{originalVolume}%</span>
-                  </div>
-                  <input
-                    aria-label="Original volume"
-                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/15 accent-aqua"
-                    max={100}
-                    min={0}
-                    onChange={(event) => setOriginalVolume(Number(event.target.value))}
-                    type="range"
-                    value={originalVolume}
-                  />
-                </label>
-
-                <label className="block space-y-2 text-sm text-fog">
-                  <div className="flex items-center justify-between">
-                    <span>Dubbing volume</span>
-                    <span className="text-white">{dubbingVolume}%</span>
-                  </div>
-                  <input
-                    aria-label="Dubbing volume"
-                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/15 accent-ember"
-                    max={100}
-                    min={0}
-                    onChange={(event) => setDubbingVolume(Number(event.target.value))}
-                    type="range"
-                    value={dubbingVolume}
-                  />
-                </label>
-              </div>
-            </section>
-          </div>
-
-          {karaokeEnabled ? (
-            <section className="rounded-[1.5rem] border border-white/10 bg-white/5 p-4">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.3em] text-aqua/80">Karaoke</p>
-                  <h2 className="text-xl font-semibold text-[#f5f1e8]">Live word pulse</h2>
-                </div>
-                <span className="text-sm text-fog/70">
-                  {activeCue ? `${formatTimestamp(activeCue.startMs)} - ${formatTimestamp(activeCue.endMs)}` : "No cue"}
-                </span>
-              </div>
-
+            <section className="space-y-3">
+              <p className="text-xs uppercase tracking-[0.28em] text-aqua/80">Playback</p>
               <div className="flex flex-wrap gap-2">
-                {karaokeWords.length > 0 ? (
-                  karaokeWords.map((word) => {
-                    const isActiveWord =
-                      currentTimeMs >= word.startMs && currentTimeMs <= word.endMs;
-
-                    return (
-                      <span
-                        className={clsx(
-                          "rounded-full px-3 py-1.5 text-sm font-medium transition",
-                          isActiveWord
-                            ? "bg-aqua text-ink shadow-[0_0_20px_rgba(82,209,198,0.4)]"
-                            : "bg-white/8 text-white/82"
-                        )}
-                        key={`${word.text}-${word.startMs}`}
-                      >
-                        {word.text}
-                      </span>
-                    );
-                  })
-                ) : (
-                  <span className="text-sm text-fog/70">No active cue</span>
-                )}
-              </div>
-            </section>
-          ) : null}
-        </div>
-
-        {transcriptPanelOpen ? (
-          <aside className="flex h-full flex-col rounded-[1.75rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] p-4">
-            <div className="mb-4 space-y-2">
-              <p className="text-xs uppercase tracking-[0.3em] text-aqua/80">Transcript panel</p>
-              <h2 className="text-2xl font-semibold text-[#f5f1e8]">Scene navigator</h2>
-              <p className="text-sm leading-6 text-fog/70">
-                Read transcript without covering the frame. Click any segment to jump.
-              </p>
-            </div>
-
-            <div className="flex-1 space-y-3 overflow-y-auto pr-1">
-              {cues.map((cue) => {
-                const isActive = cue.id === activeCue?.id;
-                return (
+                {playbackRates.map((rate) => (
                   <button
                     className={clsx(
-                      "block w-full rounded-[1.25rem] border p-4 text-left transition",
-                      isActive
-                        ? "border-aqua bg-aqua/12 shadow-[0_10px_30px_rgba(82,209,198,0.12)]"
-                        : "border-white/10 bg-black/18 hover:border-white/25 hover:bg-white/10"
+                      "rounded-full border px-4 py-2 text-sm font-semibold transition",
+                      playbackRate === rate
+                        ? "border-white bg-white text-ink"
+                        : "border-white/12 bg-white/5 text-fog hover:bg-white/10"
                     )}
-                    key={cue.id}
-                    onClick={() => jumpToCue(cue.startMs)}
+                    key={rate}
+                    onClick={() => setPlaybackRate(rate)}
                     type="button"
                   >
-                    <div className="mb-2 flex items-center justify-between gap-3 text-xs uppercase tracking-[0.24em] text-fog/70">
-                      <span>{cue.speaker}</span>
-                      <span>{formatTimestamp(cue.startMs)}</span>
-                    </div>
-                    <p className="text-base font-semibold text-[#f5f1e8]">
-                      {cue.translatedText}
-                    </p>
-                    <p className="mt-2 text-sm leading-6 text-fog/72">{cue.originalText}</p>
+                    {rate}x
                   </button>
-                );
-              })}
-            </div>
-          </aside>
-        ) : null}
-      </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="space-y-3">
+              <p className="text-xs uppercase tracking-[0.28em] text-aqua/80">Queue</p>
+              <button
+                className={clsx(
+                  "rounded-full border px-4 py-2 text-sm font-semibold transition",
+                  autoplay
+                    ? "border-aqua bg-aqua text-ink"
+                    : "border-white/12 bg-white/5 text-fog hover:bg-white/10"
+                )}
+                onClick={toggleAutoplay}
+                type="button"
+              >
+                Autoplay next
+              </button>
+            </section>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

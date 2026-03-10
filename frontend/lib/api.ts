@@ -1,6 +1,23 @@
-import type { JobStatus, ProjectSummary, TranscriptCue } from "@/lib/types";
+import type {
+  JobStatus,
+  LibraryData,
+  LibraryFolder,
+  LibraryPlaylist,
+  LibraryProjectSummary,
+  ProjectSummary,
+  TheaterQueue,
+  TranscriptCue,
+} from "@/lib/types";
 
-const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+export function getApiBaseUrl(options?: { isServer?: boolean }): string {
+  const isServer = options?.isServer ?? typeof window === "undefined";
+
+  if (isServer && process.env.BACKEND_URL) {
+    return process.env.BACKEND_URL;
+  }
+
+  return process.env.NEXT_PUBLIC_BACKEND_URL ?? process.env.BACKEND_URL ?? "http://localhost:8000";
+}
 
 type ApiProject = {
   id: string;
@@ -24,6 +41,36 @@ type ApiJobStatus = {
   state: string;
   progress: number;
   queue: string;
+};
+
+type ApiLibraryProject = {
+  id: string;
+  name: string;
+  status: string;
+  source_type: "upload" | "url";
+  source_url: string | null;
+  folder_id: string | null;
+};
+
+type ApiFolder = {
+  id: string;
+  name: string;
+  project_ids: string[];
+};
+
+type ApiPlaylist = {
+  id: string;
+  name: string;
+  items: Array<{
+    project_id: string;
+    position: number;
+  }>;
+};
+
+type ApiLibrary = {
+  folders: ApiFolder[];
+  playlists: ApiPlaylist[];
+  projects: ApiLibraryProject[];
 };
 
 function toJobStatus(job: ApiJobStatus): JobStatus {
@@ -63,8 +110,38 @@ function toProjectSummary(project: ApiProject): ProjectSummary {
   };
 }
 
+function toLibraryProjectSummary(project: ApiLibraryProject): LibraryProjectSummary {
+  return {
+    id: project.id,
+    name: project.name,
+    status: project.status,
+    sourceType: project.source_type,
+    sourceUrl: project.source_url,
+    folderId: project.folder_id,
+  };
+}
+
+function toLibraryFolder(folder: ApiFolder): LibraryFolder {
+  return {
+    id: folder.id,
+    name: folder.name,
+    projectIds: folder.project_ids,
+  };
+}
+
+function toLibraryPlaylist(playlist: ApiPlaylist): LibraryPlaylist {
+  return {
+    id: playlist.id,
+    name: playlist.name,
+    items: playlist.items.map((item) => ({
+      projectId: item.project_id,
+      position: item.position,
+    })),
+  };
+}
+
 export async function fetchProjects(): Promise<ProjectSummary[]> {
-  const response = await fetch(`${API_URL}/api/projects`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/projects`, {
     cache: "no-store"
   });
 
@@ -78,7 +155,7 @@ export async function fetchProjects(): Promise<ProjectSummary[]> {
 }
 
 export async function fetchProject(projectId: string): Promise<ProjectSummary> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/projects/${projectId}`, {
     cache: "no-store"
   });
 
@@ -89,12 +166,52 @@ export async function fetchProject(projectId: string): Promise<ProjectSummary> {
   return toProjectSummary((await response.json()) as ApiProject);
 }
 
+export async function fetchLibrary(): Promise<LibraryData> {
+  const response = await fetch(`${getApiBaseUrl()}/api/library`, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to load library");
+  }
+
+  const payload = (await response.json()) as ApiLibrary;
+
+  return {
+    folders: payload.folders.map(toLibraryFolder),
+    playlists: payload.playlists.map(toLibraryPlaylist),
+    projects: payload.projects.map(toLibraryProjectSummary),
+  };
+}
+
+export async function fetchPlaylistQueue(playlistId: string): Promise<TheaterQueue> {
+  const library = await fetchLibrary();
+  const playlist = library.playlists.find((entry) => entry.id === playlistId);
+
+  if (!playlist) {
+    throw new Error("Playlist not found");
+  }
+
+  return {
+    playlistId: playlist.id,
+    playlistName: playlist.name,
+    items: playlist.items.map((item) => {
+      const project = library.projects.find((entry) => entry.id === item.projectId);
+
+      return {
+        projectId: item.projectId,
+        title: project?.name ?? item.projectId,
+      };
+    }),
+  };
+}
+
 export async function createProjectFromUpload(name: string, file: File): Promise<JobStatus> {
   const formData = new FormData();
   formData.set("name", name);
   formData.set("file", file);
 
-  const response = await fetch(`${API_URL}/api/projects/upload`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/projects/upload`, {
     method: "POST",
     body: formData
   });
@@ -107,7 +224,7 @@ export async function createProjectFromUpload(name: string, file: File): Promise
 }
 
 export async function createProjectFromUrl(name: string, sourceUrl: string): Promise<JobStatus> {
-  const response = await fetch(`${API_URL}/api/projects/import`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/projects/import`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -122,8 +239,120 @@ export async function createProjectFromUrl(name: string, sourceUrl: string): Pro
   return toJobStatus((await response.json()) as ApiJobStatus);
 }
 
+export async function createFolder(name: string): Promise<LibraryFolder> {
+  const response = await fetch(`${getApiBaseUrl()}/api/library/folders`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ name }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to create folder");
+  }
+
+  return toLibraryFolder((await response.json()) as ApiFolder);
+}
+
+export async function createPlaylist(name: string): Promise<LibraryPlaylist> {
+  const response = await fetch(`${getApiBaseUrl()}/api/library/playlists`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ name }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to create playlist");
+  }
+
+  return toLibraryPlaylist((await response.json()) as ApiPlaylist);
+}
+
+export async function assignProjectToFolder(
+  projectId: string,
+  folderId: string,
+): Promise<LibraryProjectSummary> {
+  const response = await fetch(`${getApiBaseUrl()}/api/library/projects/${projectId}/folder`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ folder_id: folderId }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to assign project to folder");
+  }
+
+  return toLibraryProjectSummary((await response.json()) as ApiLibraryProject);
+}
+
+export async function addProjectToPlaylist(
+  playlistId: string,
+  projectId: string,
+): Promise<LibraryPlaylist> {
+  const response = await fetch(`${getApiBaseUrl()}/api/library/playlists/${playlistId}/items`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to add project to playlist");
+  }
+
+  return toLibraryPlaylist((await response.json()) as ApiPlaylist);
+}
+
+export async function reorderPlaylistItems(
+  playlistId: string,
+  projectIds: string[],
+): Promise<LibraryPlaylist> {
+  const response = await fetch(`${getApiBaseUrl()}/api/library/playlists/${playlistId}/items/reorder`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ project_ids: projectIds }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to reorder playlist");
+  }
+
+  return toLibraryPlaylist((await response.json()) as ApiPlaylist);
+}
+
+export async function removeProjectFromPlaylist(
+  playlistId: string,
+  projectId: string,
+): Promise<void> {
+  const response = await fetch(`${getApiBaseUrl()}/api/library/playlists/${playlistId}/items/${projectId}`, {
+    method: "DELETE",
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to remove project from playlist");
+  }
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  const response = await fetch(`${getApiBaseUrl()}/api/projects/${projectId}`, {
+    method: "DELETE"
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to delete project");
+  }
+}
+
 export async function startProjectTranscription(projectId: string): Promise<JobStatus> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/transcribe`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/projects/${projectId}/transcribe`, {
     method: "POST"
   });
 
@@ -135,7 +364,7 @@ export async function startProjectTranscription(projectId: string): Promise<JobS
 }
 
 export async function fetchJob(jobId: string): Promise<JobStatus> {
-  const response = await fetch(`${API_URL}/api/jobs/${jobId}`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/jobs/${jobId}`, {
     cache: "no-store"
   });
 
@@ -155,5 +384,5 @@ export function resolveMediaUrl(sourceUrl?: string | null): string | null {
     return sourceUrl;
   }
 
-  return `${API_URL}${sourceUrl}`;
+  return `${getApiBaseUrl()}${sourceUrl}`;
 }

@@ -88,6 +88,7 @@ services:
     env_file:
       - .env
     environment:
+      BACKEND_URL: http://api:8000
       NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
     ports:
       - "3002:3000"

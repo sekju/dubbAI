@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -8,6 +8,7 @@ from app.schemas.project import ProjectImportRequest, ProjectResponse
 from app.services.projects import (
     create_job_for_project,
     create_project_with_job,
+    delete_project,
     get_project_model_or_404,
     get_project_or_404,
     list_projects,
@@ -25,6 +26,12 @@ async def get_projects(db: Session = Depends(get_db)) -> list[ProjectResponse]:
 @router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, db: Session = Depends(get_db)) -> ProjectResponse:
     return get_project_or_404(db, project_id)
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_project(project_id: str, db: Session = Depends(get_db)) -> Response:
+    delete_project(db, project_id=project_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/import", response_model=JobStatusResponse, status_code=status.HTTP_202_ACCEPTED)

@@ -17,9 +17,16 @@ Production-oriented multi-user SaaS for transcript, translation, diarization and
 1. Copy `.env.example` to `.env`
 2. Fill in Gemini and R2 credentials
 3. Run `docker compose up --build`
-4. Open `http://localhost:3002`
+4. Open `http://localhost:3002/library`
 5. Open `http://localhost:8000/api/docs`
 6. Open `http://localhost:8025` for activation mails in Mailpit
+
+If backend models or database fields change during local development, reset the persisted Postgres volume before restarting the stack:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
 
 ## Services
 
