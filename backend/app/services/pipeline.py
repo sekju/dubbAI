@@ -3,7 +3,8 @@ from app.schemas.transcript import TranscriptChunk, TranscriptWord
 
 PIPELINE_TASKS = [
     "app.tasks.ingest.ingest_source",
-    "app.tasks.ai.transcribe_and_translate",
+    "app.tasks.ai.transcribe_project",
+    "app.tasks.ai.translate_project",
     "app.tasks.ai.generate_dubbing",
     "app.tasks.render.render_project",
 ]

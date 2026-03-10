@@ -104,6 +104,8 @@ def _ensure_transcription_job_can_start(project: Project) -> None:
 def _ensure_translation_job_can_start(project: Project) -> None:
     if project.translation_status != "queued":
         raise StageConflictError("Translation job is stale")
+    if project.transcript_status != "ready":
+        raise StageConflictError("Cannot start translation before transcription is ready")
     if project.transcript_status in ACTIVE_STAGE_STATUSES:
         raise StageConflictError("Cannot start translation while transcription is queued or in progress")
 
@@ -231,12 +233,6 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
         raise
     finally:
         db.close()
-
-
-@celery_app.task(name="app.tasks.ai.transcribe_and_translate")
-def transcribe_and_translate(project_id: str) -> dict[str, str]:
-    return {"project_id": project_id, "status": "transcribed"}
-
 
 @celery_app.task(name="app.tasks.ai.generate_dubbing")
 def generate_dubbing(project_id: str) -> dict[str, str]:

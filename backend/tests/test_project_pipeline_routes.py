@@ -6,7 +6,7 @@ from app.db.session import SessionLocal
 from app.models.job import PipelineJob
 from app.models.project import Project
 from app.models.transcript import TranscriptSegment
-from app.tasks.ai import transcribe_project, translate_project
+from app.tasks.ai import StageConflictError, transcribe_project, translate_project
 
 
 def _create_project(client) -> str:
@@ -43,7 +43,22 @@ def test_translate_endpoint_sets_translation_stage_to_queued_without_changing_le
     client,
     monkeypatch,
 ) -> None:
-    project_id = _create_project(client)
+    with SessionLocal() as db:
+        db.add(
+            Project(
+                id="project-ready-for-translate",
+                owner_id="local-dev",
+                name="Ready for translate",
+                source_type="upload",
+                source_url="/storage/uploads/project-ready-for-translate/clip.mp4",
+                status="transcribed",
+                transcript_status="ready",
+                translation_status="not_started",
+            )
+        )
+        db.commit()
+
+    project_id = "project-ready-for-translate"
 
     delay_mock = Mock()
     monkeypatch.setattr("app.api.routes.projects.translate_project_task.delay", delay_mock)
@@ -58,7 +73,7 @@ def test_translate_endpoint_sets_translation_stage_to_queued_without_changing_le
     detail = client.get(f"/api/projects/{project_id}")
 
     assert detail.status_code == 200
-    assert detail.json()["status"] == "queued"
+    assert detail.json()["status"] == "transcribed"
     assert detail.json()["translation_status"] == "queued"
 
 
@@ -249,10 +264,20 @@ def test_translate_endpoint_rejects_when_transcription_is_active(
     delay_mock.assert_not_called()
 
 
-def test_translate_task_does_not_mark_transcript_ready_when_it_was_not_started(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_translate_endpoint_requires_ready_transcript(client, monkeypatch) -> None:
+    project_id = _create_project(client)
+
+    delay_mock = Mock()
+    monkeypatch.setattr("app.api.routes.projects.translate_project_task.delay", delay_mock)
+
+    response = client.post(f"/api/projects/{project_id}/translate")
+
+    assert response.status_code == 409
+    assert "before transcription is ready" in response.json()["detail"]
+    delay_mock.assert_not_called()
+
+
+def test_translate_task_rejects_when_transcript_is_not_ready(tmp_path) -> None:
     source_path = tmp_path / "source.mp4"
     source_path.write_bytes(b"video")
 
@@ -278,34 +303,8 @@ def test_translate_task_does_not_mark_transcript_ready_when_it_was_not_started(
         db.add_all([project, job])
         db.commit()
 
-    def fake_extract_audio(source, audio_path) -> None:
-        assert source == source_path
-        audio_path.parent.mkdir(parents=True, exist_ok=True)
-        audio_path.write_bytes(b"audio")
-
-    class FakeGeminiClient:
-        async def translate(self, audio_bytes: bytes, target_language: str = "pl") -> dict[str, object]:
-            assert audio_bytes == b"audio"
-            assert target_language == "pl"
-            return {
-                "segments": [
-                    {
-                        "speaker": "Speaker A",
-                        "start_ms": 0,
-                        "end_ms": 1000,
-                        "original_text": "Hello",
-                        "translated_text": "Czesc",
-                        "words": [],
-                    }
-                ]
-            }
-
-    monkeypatch.setattr("app.tasks.ai.extract_audio", fake_extract_audio)
-    monkeypatch.setattr("app.tasks.ai.GeminiClient", FakeGeminiClient)
-
-    result = translate_project("job-translate-only", "project-translate-only")
-
-    assert result == {"project_id": "project-translate-only", "status": "queued"}
+    with pytest.raises(StageConflictError, match="before transcription is ready"):
+        translate_project("job-translate-only", "project-translate-only")
 
     with SessionLocal() as db:
         saved_project = db.get(Project, "project-translate-only")
@@ -314,9 +313,8 @@ def test_translate_task_does_not_mark_transcript_ready_when_it_was_not_started(
         assert saved_project is not None
         assert saved_project.status == "queued"
         assert saved_project.transcript_status == "not_started"
-        assert saved_project.translation_status == "ready"
-        assert len(saved_segments) == 1
-        assert saved_segments[0].translated_text == "Czesc"
+        assert saved_project.translation_status == "queued"
+        assert saved_segments == []
 
 
 def test_retranscribe_task_invalidates_ready_translation_before_processing(

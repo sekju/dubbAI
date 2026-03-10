@@ -111,6 +111,11 @@ def _validate_pipeline_transition(project: Project, *, queue: str) -> None:
         return
 
     if queue == TRANSLATE_QUEUE:
+        if project.transcript_status != "ready":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot start translation before transcription is ready",
+            )
         if project.translation_status in ACTIVE_STAGE_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
