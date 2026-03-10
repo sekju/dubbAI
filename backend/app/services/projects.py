@@ -24,6 +24,16 @@ INGEST_QUEUE = "app.tasks.ingest.ingest_source"
 TRANSCRIBE_QUEUE = "app.tasks.ai.transcribe_project"
 
 
+def _resolve_target_language(source_language: str | None, target_language: str | None) -> str | None:
+    if target_language is not None:
+        return target_language
+    if source_language == "en":
+        return "pl"
+    if source_language == "pl":
+        return "en"
+    return None
+
+
 def _serialize_segments(segments: list[TranscriptSegment]) -> list[TranscriptChunk]:
     return [
         TranscriptChunk(
@@ -100,6 +110,8 @@ def create_project_with_job(
     name: str,
     source_type: str,
     source_url: str,
+    source_language: str | None = None,
+    target_language: str | None = None,
     status_value: str,
 ) -> JobStatusResponse:
     project = Project(
@@ -108,6 +120,8 @@ def create_project_with_job(
         name=name,
         source_type=source_type,
         source_url=source_url,
+        source_language=source_language,
+        target_language=_resolve_target_language(source_language, target_language),
         status=status_value,
     )
     job = PipelineJob(

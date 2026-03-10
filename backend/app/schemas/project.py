@@ -9,6 +9,8 @@ class ProjectCreateRequest(BaseModel):
     name: str = Field(min_length=3, max_length=120)
     source_type: Literal["upload", "url"] = "upload"
     source_url: str | None = None
+    source_language: str | None = None
+    target_language: str | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -28,3 +30,5 @@ class ProjectResponse(BaseModel):
 class ProjectImportRequest(BaseModel):
     name: str = Field(min_length=3, max_length=120)
     source_url: str = Field(min_length=8)
+    source_language: str | None = None
+    target_language: str | None = None

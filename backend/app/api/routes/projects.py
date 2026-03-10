@@ -44,6 +44,8 @@ async def import_project(
         name=payload.name,
         source_type="url",
         source_url=payload.source_url,
+        source_language=payload.source_language,
+        target_language=payload.target_language,
         status_value="queued",
     )
 
@@ -51,6 +53,8 @@ async def import_project(
 @router.post("/upload", response_model=JobStatusResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_project(
     name: str = Form(...),
+    source_language: str | None = Form(None),
+    target_language: str | None = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ) -> JobStatusResponse:
@@ -59,6 +63,8 @@ async def upload_project(
         name=name,
         source_type="upload",
         source_url="pending",
+        source_language=source_language,
+        target_language=target_language,
         status_value="uploaded",
     )
     settings = get_settings()
