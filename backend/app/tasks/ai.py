@@ -82,6 +82,15 @@ def _persist_segments(
         )
 
 
+def _ordered_segments(db, project: Project) -> list[TranscriptSegment]:
+    return (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.project_id == project.id)
+        .order_by(TranscriptSegment.start_ms.asc(), TranscriptSegment.id.asc())
+        .all()
+    )
+
+
 def _clear_translated_segments(db, project: Project) -> None:
     db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).update(
         {TranscriptSegment.translated_text: ""},
@@ -108,6 +117,10 @@ def _ensure_translation_job_can_start(project: Project) -> None:
         raise StageConflictError("Cannot start translation before transcription is ready")
     if project.transcript_status in ACTIVE_STAGE_STATUSES:
         raise StageConflictError("Cannot start translation while transcription is queued or in progress")
+
+
+def _fallback_translations(segments: list[TranscriptSegment]) -> list[str]:
+    return [segment.original_text for segment in segments]
 
 
 @celery_app.task(name="app.tasks.ai.transcribe_project")
@@ -174,7 +187,6 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
 
 @celery_app.task(name="app.tasks.ai.translate_project")
 def translate_project(job_id: str, project_id: str) -> dict[str, str]:
-    settings = get_settings()
     db = SessionLocal()
     try:
         job = db.get(PipelineJob, job_id)
@@ -183,31 +195,45 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
             raise ValueError("Project or job not found")
 
         _ensure_translation_job_can_start(project)
-        _clear_translated_segments(db, project)
+        segments = _ordered_segments(db, project)
+        if not segments:
+            raise StageConflictError("Cannot start translation before transcription segments exist")
 
         job.state = "started"
         job.progress = 10
         project.translation_status = "in_progress"
         db.commit()
 
-        source_path = _resolve_source_path(project)
-        audio_path = settings.output_directory / project.id / "audio.wav"
-        extract_audio(source_path, audio_path)
         job.progress = 45
         db.commit()
 
         try:
-          payload = asyncio.run(
-              GeminiClient().translate(
-                  audio_path.read_bytes(),
+          translated_texts = asyncio.run(
+              GeminiClient().translate_segments(
+                  [
+                      {
+                          "speaker": segment.speaker,
+                          "start_ms": segment.start_ms,
+                          "end_ms": segment.end_ms,
+                          "original_text": segment.original_text,
+                      }
+                      for segment in segments
+                  ],
                   target_language=project.target_language or "pl",
               )
           )
-          segments = payload.get("segments", []) or _fallback_segments(project.name)
         except Exception:
-          segments = _fallback_segments(project.name)
+          translated_texts = _fallback_translations(segments)
 
-        _persist_segments(db, project, segments, include_translation=True)
+        if len(translated_texts) != len(segments):
+            raise ValueError(
+                "Gemini translation response length mismatch: "
+                f"{len(translated_texts)} translations for {len(segments)} segments"
+            )
+
+        for segment, translated_text in zip(segments, translated_texts, strict=True):
+            segment.translated_text = translated_text
+            db.add(segment)
 
         project.translation_status = "ready"
         job.state = "success"

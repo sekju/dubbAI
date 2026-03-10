@@ -75,6 +75,15 @@ def _serialize_segments(
     ]
 
 
+def _should_include_translation(
+    project: Project,
+    segments: list[TranscriptSegment],
+) -> bool:
+    if project.translation_status == "not_started":
+        return False
+    return any(segment.translated_text for segment in segments)
+
+
 def _legacy_compatible_status(project: Project) -> str:
     if project.status not in TRANSLATION_ONLY_LEGACY_STATUSES:
         return project.status
@@ -147,7 +156,7 @@ def serialize_project(db: Session, project: Project) -> ProjectResponse:
         dubbing_status=project.dubbing_status,
         transcript_segments=_serialize_segments(
             segments,
-            include_translation=project.translation_status == "ready",
+            include_translation=_should_include_translation(project, segments),
         ),
     )
 
@@ -242,7 +251,6 @@ def create_job_for_project(db: Session, *, project_id: str, queue: str) -> JobSt
             _clear_translated_segments(db, project)
     if queue == TRANSLATE_QUEUE:
         project.translation_status = "queued"
-        _clear_translated_segments(db, project)
 
     job = PipelineJob(
         id=str(uuid4()),

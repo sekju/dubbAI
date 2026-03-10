@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import Iterable
 
 import httpx
@@ -79,8 +80,44 @@ class GeminiClient:
         candidate = data["candidates"][0]["content"]["parts"][0]["text"]
         return httpx.Response(200, text=candidate).json()
 
-    async def translate(self, audio_bytes: bytes, target_language: str = "pl") -> dict:
-        return await self.transcribe_translate(audio_bytes, target_language=target_language)
+    async def translate_segments(
+        self,
+        segments: list[dict[str, object]],
+        target_language: str = "pl",
+    ) -> list[str]:
+        if not self.settings.gemini_api_key:
+            return [str(segment["original_text"]) for segment in segments]
+
+        prompt = (
+            "Return JSON with a top-level 'translations' array. Preserve segment order exactly and return "
+            f"one translated string per input segment. Translate to {target_language}."
+        )
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": (
+                                f"{prompt}\n\n"
+                                + json.dumps({"segments": segments}, ensure_ascii=True)
+                            )
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {"responseMimeType": "application/json"},
+        }
+        data = await self._generate_content(
+            payload,
+            self._candidate_models(
+                self.settings.gemini_model_text,
+                ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+            ),
+        )
+
+        candidate = data["candidates"][0]["content"]["parts"][0]["text"]
+        response_payload = httpx.Response(200, text=candidate).json()
+        return [str(item) for item in response_payload.get("translations", [])]
 
     async def synthesize_speech(self, text: str, voice_name: str) -> bytes:
         if not self.settings.gemini_api_key:

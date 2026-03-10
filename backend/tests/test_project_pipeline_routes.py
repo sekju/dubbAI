@@ -317,6 +317,120 @@ def test_translate_task_rejects_when_transcript_is_not_ready(tmp_path) -> None:
         assert saved_segments == []
 
 
+def test_translate_retry_keeps_existing_translation_visible_while_queued(
+    client,
+    monkeypatch,
+) -> None:
+    delay_mock = Mock()
+    monkeypatch.setattr("app.api.routes.projects.translate_project_task.delay", delay_mock)
+
+    with SessionLocal() as db:
+        project = Project(
+            id="project-translate-retry",
+            owner_id="local-dev",
+            name="Translate retry",
+            source_type="upload",
+            source_url="/storage/uploads/project-translate-retry/clip.mp4",
+            status="transcribed",
+            transcript_status="ready",
+            translation_status="ready",
+        )
+        segment = TranscriptSegment(
+            id="segment-translate-retry",
+            project_id=project.id,
+            speaker="Speaker A",
+            start_ms=0,
+            end_ms=1000,
+            original_text="Hello",
+            translated_text="Czesc",
+        )
+        db.add_all([project, segment])
+        db.commit()
+
+    response = client.post("/api/projects/project-translate-retry/translate")
+
+    assert response.status_code == 202
+    delay_mock.assert_called_once()
+
+    detail = client.get("/api/projects/project-translate-retry")
+
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "transcribed"
+    assert detail.json()["translation_status"] == "queued"
+    assert detail.json()["transcript_segments"][0]["translated_text"] == "Czesc"
+
+
+def test_translate_task_updates_existing_segments_without_replacing_transcript(monkeypatch) -> None:
+    with SessionLocal() as db:
+        project = Project(
+            id="project-translate-ready",
+            owner_id="local-dev",
+            name="Translate ready",
+            source_type="upload",
+            source_url="/storage/uploads/project-translate-ready/clip.mp4",
+            target_language="pl",
+            status="transcribed",
+            transcript_status="ready",
+            translation_status="queued",
+        )
+        segment = TranscriptSegment(
+            id="segment-translate-ready",
+            project_id=project.id,
+            speaker="Speaker A",
+            start_ms=125,
+            end_ms=950,
+            original_text="Hello",
+            translated_text="",
+        )
+        job = PipelineJob(
+            id="job-translate-ready",
+            project_id=project.id,
+            state="queued",
+            progress=0,
+            queue="app.tasks.ai.translate_project",
+        )
+        db.add_all([project, segment, job])
+        db.commit()
+
+    class FakeGeminiClient:
+        async def translate_segments(
+            self,
+            segments: list[dict[str, object]],
+            target_language: str = "pl",
+        ) -> list[str]:
+            assert target_language == "pl"
+            assert segments == [
+                {
+                    "speaker": "Speaker A",
+                    "start_ms": 125,
+                    "end_ms": 950,
+                    "original_text": "Hello",
+                }
+            ]
+            return ["Czesc"]
+
+    monkeypatch.setattr("app.tasks.ai.GeminiClient", FakeGeminiClient)
+
+    result = translate_project("job-translate-ready", "project-translate-ready")
+
+    assert result == {"project_id": "project-translate-ready", "status": "transcribed"}
+
+    with SessionLocal() as db:
+        saved_project = db.get(Project, "project-translate-ready")
+        saved_segment = db.get(TranscriptSegment, "segment-translate-ready")
+
+        assert saved_project is not None
+        assert saved_project.status == "transcribed"
+        assert saved_project.transcript_status == "ready"
+        assert saved_project.translation_status == "ready"
+        assert saved_segment is not None
+        assert saved_segment.speaker == "Speaker A"
+        assert saved_segment.start_ms == 125
+        assert saved_segment.end_ms == 950
+        assert saved_segment.original_text == "Hello"
+        assert saved_segment.translated_text == "Czesc"
+
+
 def test_retranscribe_task_invalidates_ready_translation_before_processing(
     tmp_path,
     monkeypatch,

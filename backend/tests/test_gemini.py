@@ -83,3 +83,42 @@ def test_transcribe_translate_retries_with_supported_fallback_model(monkeypatch)
     payload = asyncio.run(client.transcribe_translate(b"audio"))
 
     assert payload["segments"][0]["translated_text"] == "Czesc"
+
+
+def test_translate_segments_returns_ordered_translations(monkeypatch) -> None:
+    responses = {
+        "gemini-3.1-flash-lite": _response(
+            200,
+            "gemini-3.1-flash-lite",
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps({"translations": ["Czesc", "Do widzenia"]})
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+    }
+    monkeypatch.setattr("app.services.gemini.httpx.AsyncClient", lambda timeout: FakeAsyncClient(responses))
+
+    client = GeminiClient()
+    client.settings.gemini_api_key = "test-key"
+    client.settings.gemini_model_text = "gemini-3.1-flash-lite"
+
+    translations = asyncio.run(
+        client.translate_segments(
+            [
+                {"speaker": "Speaker A", "start_ms": 0, "end_ms": 1000, "original_text": "Hello"},
+                {"speaker": "Speaker B", "start_ms": 1000, "end_ms": 2000, "original_text": "Bye"},
+            ],
+            target_language="pl",
+        )
+    )
+
+    assert translations == ["Czesc", "Do widzenia"]
