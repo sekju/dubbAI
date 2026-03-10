@@ -1,0 +1,25 @@
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+from app.schemas.transcript import TranscriptChunk
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=120)
+    source_type: Literal["upload", "url"] = "upload"
+    source_url: str | None = None
+
+
+class ProjectResponse(BaseModel):
+    id: str
+    name: str
+    source_type: Literal["upload", "url"]
+    source_url: str | None = None
+    status: str
+    transcript_segments: list[TranscriptChunk] = Field(default_factory=list)
+
+
+class ProjectImportRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=120)
+    source_url: str = Field(min_length=8)
