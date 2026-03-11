@@ -129,6 +129,7 @@ def _build_segments_from_words(words: list[dict[str, object]]) -> list[dict[str,
                 "end_ms": int(current_words[-1]["end_ms"]),
                 "original_text": " ".join(str(word["original_text"]) for word in current_words),
                 "translated_text": " ".join(translated_parts),
+                "word_count": len(current_words),
             }
         )
         current_words.clear()
@@ -223,6 +224,50 @@ def _word_models_to_payload(words: list[TranscriptWord]) -> list[dict[str, objec
         }
         for word in words
     ]
+
+
+def _assign_segment_translations_to_words(
+    word_payloads: list[dict[str, object]],
+    segments: list[dict[str, object]],
+    translated_texts: list[str],
+) -> list[dict[str, object]]:
+    if len(segments) != len(translated_texts):
+        raise ValueError(
+            "Gemini translation response length mismatch: "
+            f"{len(translated_texts)} translations for {len(segments)} segments"
+        )
+
+    next_word_index = 0
+    for segment, translated_text in zip(segments, translated_texts, strict=True):
+        word_count = int(segment.get("word_count", 0))
+        segment_words = word_payloads[next_word_index:next_word_index + word_count]
+        next_word_index += word_count
+
+        tokens = translated_text.split()
+        if not segment_words:
+            continue
+
+        if not tokens:
+            for word in segment_words:
+                word["translated_text"] = ""
+            continue
+
+        if len(segment_words) == 1:
+            segment_words[0]["translated_text"] = translated_text
+            segment["translated_text"] = translated_text
+            continue
+
+        total_tokens = len(tokens)
+        for index, word in enumerate(segment_words):
+            start = round(index * total_tokens / len(segment_words))
+            end = round((index + 1) * total_tokens / len(segment_words))
+            if end <= start:
+                end = min(total_tokens, start + 1)
+            word["translated_text"] = " ".join(tokens[start:end]).strip()
+
+        segment["translated_text"] = translated_text
+
+    return word_payloads
 
 
 @celery_app.task(name="app.tasks.ai.transcribe_project")
@@ -321,15 +366,18 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
         job.progress = 45
         db.commit()
 
+        word_payloads = _word_models_to_payload(words)
+        segment_payloads = _build_segments_from_words(word_payloads)
+
         translated_texts = asyncio.run(
             GeminiClient().translate_segments(
                 [
                     {
-                        "start_ms": word.start_ms,
-                        "end_ms": word.end_ms,
-                        "original_text": word.original_text,
+                        "start_ms": segment["start_ms"],
+                        "end_ms": segment["end_ms"],
+                        "original_text": segment["original_text"],
                     }
-                    for word in words
+                    for segment in segment_payloads
                 ],
                 target_language=project.target_language or "pl",
                 model_name=project.gemini_model_text,
@@ -340,20 +388,20 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
             )
         )
 
-        if len(translated_texts) != len(words):
-            raise ValueError(
-                "Gemini translation response length mismatch: "
-                f"{len(translated_texts)} translations for {len(words)} words"
-            )
+        translated_word_payloads = _assign_segment_translations_to_words(
+            word_payloads,
+            segment_payloads,
+            translated_texts,
+        )
 
-        for word, translated_text in zip(words, translated_texts, strict=True):
-            word.translated_text = translated_text
+        for word, translated_payload in zip(words, translated_word_payloads, strict=True):
+            word.translated_text = str(translated_payload.get("translated_text", ""))
             db.add(word)
 
         _persist_segments(
             db,
             project,
-            _build_segments_from_words(_word_models_to_payload(words)),
+            segment_payloads,
             include_translation=True,
         )
 

@@ -768,3 +768,92 @@ def test_translate_task_updates_existing_words_and_rebuilds_segments(monkeypatch
         assert saved_segment.translated_text == "Czesc"
         assert saved_word is not None
         assert saved_word.translated_text == "Czesc"
+
+
+def test_translate_task_maps_segment_translation_back_to_words(monkeypatch) -> None:
+    with SessionLocal() as db:
+        project = Project(
+            id="project-translate-segmented",
+            owner_id="local-dev",
+            name="Translate segmented",
+            source_type="upload",
+            source_url="/storage/uploads/project-translate-segmented/clip.mp4",
+            target_language="pl",
+            status="transcribed",
+            transcript_status="ready",
+            translation_status="queued",
+        )
+        words = [
+            TranscriptWord(
+                id="word-translate-segmented-1",
+                project_id=project.id,
+                position=1,
+                start_ms=125,
+                end_ms=450,
+                original_text="Hello",
+                translated_text="",
+                keyword=False,
+            ),
+            TranscriptWord(
+                id="word-translate-segmented-2",
+                project_id=project.id,
+                position=2,
+                start_ms=451,
+                end_ms=950,
+                original_text="world",
+                translated_text="",
+                keyword=False,
+            ),
+        ]
+        job = PipelineJob(
+            id="job-translate-segmented",
+            project_id=project.id,
+            state="queued",
+            progress=0,
+            queue="app.tasks.ai.translate_project",
+        )
+        db.add(project)
+        db.add_all(words)
+        db.add(job)
+        db.commit()
+
+    class FakeGeminiClient:
+        async def translate_segments(
+            self,
+            segments: list[dict[str, object]],
+            target_language: str = "pl",
+            **_: object,
+        ) -> list[str]:
+            assert target_language == "pl"
+            assert segments == [
+                {
+                    "start_ms": 125,
+                    "end_ms": 950,
+                    "original_text": "Hello world",
+                }
+            ]
+            return ["Czesc swiecie"]
+
+    monkeypatch.setattr("app.tasks.ai.GeminiClient", FakeGeminiClient)
+
+    result = translate_project("job-translate-segmented", "project-translate-segmented")
+
+    assert result == {"project_id": "project-translate-segmented", "status": "translated"}
+
+    with SessionLocal() as db:
+        saved_words = (
+            db.query(TranscriptWord)
+            .filter_by(project_id="project-translate-segmented")
+            .order_by(TranscriptWord.position.asc())
+            .all()
+        )
+        saved_segment = (
+            db.query(TranscriptSegment)
+            .filter_by(project_id="project-translate-segmented")
+            .order_by(TranscriptSegment.start_ms.asc())
+            .first()
+        )
+
+        assert [word.translated_text for word in saved_words] == ["Czesc", "swiecie"]
+        assert saved_segment is not None
+        assert saved_segment.translated_text == "Czesc swiecie"
