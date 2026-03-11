@@ -151,4 +151,9 @@ export type JobStatus = {
 export type ProjectIntakeLanguages = {
   sourceLanguage?: string | null;
   targetLanguage?: string | null;
+  geminiModelText?: "gemini-2.5-flash-lite" | "gemini-2.5-flash";
+  geminiThinkingMode?: "off" | "dynamic" | "budget";
+  geminiThinkingBudget?: number | null;
+  geminiMaxOutputTokens?: number | null;
+  geminiStructuredOutput?: boolean;
 };

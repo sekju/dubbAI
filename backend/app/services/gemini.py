@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Iterable
+from json import JSONDecodeError
 
 import httpx
 
@@ -84,6 +85,93 @@ class GeminiClient:
 
         return (((hours * 60) + minutes) * 60 + seconds) * 1000 + millis
 
+    def _build_transcript_response_schema(self) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "words": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "start": {"type": ["string", "number", "integer"]},
+                            "end": {"type": ["string", "number", "integer"]},
+                            "text": {"type": "string"},
+                            "keyword": {"type": "boolean"},
+                        },
+                        "required": ["start", "end", "text"],
+                    },
+                }
+            },
+            "required": ["words"],
+        }
+
+    def _build_translation_response_schema(self) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "translations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "translated_text": {"type": "string"},
+                        },
+                        "required": ["translated_text"],
+                    },
+                }
+            },
+            "required": ["translations"],
+        }
+
+    def _resolve_thinking_budget(
+        self,
+        *,
+        model_name: str,
+        thinking_mode: str,
+        thinking_budget: int | None,
+    ) -> int | None:
+        if thinking_mode == "off":
+            return None
+        if thinking_mode == "dynamic":
+            return -1
+        if thinking_budget is None:
+            return 512 if "flash-lite" in model_name else 1024
+        return thinking_budget
+
+    def _build_generation_config(
+        self,
+        *,
+        model_name: str,
+        max_output_tokens: int,
+        thinking_mode: str,
+        thinking_budget: int | None,
+        structured_output: bool,
+        response_schema: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        config: dict[str, object] = {
+            "responseMimeType": "application/json",
+            "maxOutputTokens": max_output_tokens,
+        }
+        resolved_thinking_budget = self._resolve_thinking_budget(
+            model_name=model_name,
+            thinking_mode=thinking_mode,
+            thinking_budget=thinking_budget,
+        )
+        if resolved_thinking_budget is not None:
+            config["thinkingConfig"] = {"thinkingBudget": resolved_thinking_budget}
+        if structured_output and response_schema is not None:
+            config["responseJsonSchema"] = response_schema
+        return config
+
+    def _parse_json_candidate(self, candidate: str) -> object:
+        normalized = candidate.strip()
+        if normalized.startswith("```"):
+            normalized = normalized.removeprefix("```json").removeprefix("```JSON").removeprefix("```").strip()
+            if normalized.endswith("```"):
+                normalized = normalized[:-3].strip()
+        return json.loads(normalized)
+
     def _normalize_transcript_words(self, response_payload: object) -> dict[str, list[dict[str, object]]]:
         raw_words: object
         if isinstance(response_payload, list):
@@ -106,7 +194,7 @@ class GeminiClient:
             start = item.get("start")
             end = item.get("end")
             text = item.get("text")
-            keyword = item.get("keyword")
+            keyword = item.get("keyword", False)
 
             if (
                 not isinstance(start, str | int | float)
@@ -135,18 +223,36 @@ class GeminiClient:
 
         return {"words": normalized_words}
 
-    async def transcribe_translate(self, audio_bytes: bytes, target_language: str = "pl") -> dict:
+    async def transcribe_translate(
+        self,
+        audio_bytes: bytes,
+        target_language: str = "pl",
+        *,
+        source_language: str | None = None,
+        model_name: str | None = None,
+        thinking_mode: str = "off",
+        thinking_budget: int | None = None,
+        max_output_tokens: int | None = None,
+        structured_output: bool = True,
+    ) -> dict:
         if not self.settings.gemini_api_key:
             return {"words": []}
 
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        resolved_model_name = model_name or self.settings.gemini_model_text
+        resolved_max_output_tokens = max_output_tokens or self.settings.gemini_max_output_tokens
         prompt = (
             "Return JSON only in a per-word subtitle format. Build a top-level 'words' array for subtitle rendering. "
             "Each word item must contain 'start', 'end', 'text', and 'keyword'. "
             "Use timestamp strings like '0:00.681'. Preserve punctuation inside word text. "
             "Mark important words or short key phrases with 'keyword': true. "
             "Do not return sentence-level segments or commentary. "
-            f"Translation target is {target_language}, but this response must contain the original spoken words only."
+            f"Translation target is {target_language}, but this response must contain the original spoken words only. "
+            + (
+                "Detect the spoken source language automatically."
+                if source_language in {None, "", "auto"}
+                else f"The spoken source language is {source_language}."
+            )
         )
         payload = {
             "contents": [
@@ -157,29 +263,55 @@ class GeminiClient:
                     ]
                 }
             ],
-            "generationConfig": {"responseMimeType": "application/json"},
-        }
-        data = await self._generate_content(
-            payload,
-            self._candidate_models(
-                self.settings.gemini_model_text,
-                ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+            "generationConfig": self._build_generation_config(
+                model_name=resolved_model_name,
+                max_output_tokens=resolved_max_output_tokens,
+                thinking_mode=thinking_mode,
+                thinking_budget=thinking_budget,
+                structured_output=structured_output,
+                response_schema=self._build_transcript_response_schema(),
             ),
-            timeout=600.0,
-        )
+        }
 
-        candidate = data["candidates"][0]["content"]["parts"][0]["text"]
-        response_payload = httpx.Response(200, text=candidate).json()
-        return self._normalize_transcript_words(response_payload)
+        last_decode_error: JSONDecodeError | None = None
+        for _attempt in range(2):
+            data = await self._generate_content(
+                payload,
+                self._candidate_models(
+                    resolved_model_name,
+                    ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+                ),
+                timeout=600.0,
+            )
+            candidate = data["candidates"][0]["content"]["parts"][0]["text"]
+            try:
+                response_payload = self._parse_json_candidate(candidate)
+                normalized_payload = self._normalize_transcript_words(response_payload)
+                if normalized_payload["words"]:
+                    return normalized_payload
+            except JSONDecodeError as exc:
+                last_decode_error = exc
+
+        if last_decode_error is not None:
+            raise last_decode_error
+        return {"words": []}
 
     async def translate_segments(
         self,
         segments: list[dict[str, object]],
         target_language: str = "pl",
+        *,
+        model_name: str | None = None,
+        thinking_mode: str = "off",
+        thinking_budget: int | None = None,
+        max_output_tokens: int | None = None,
+        structured_output: bool = True,
     ) -> list[str]:
         if not self.settings.gemini_api_key:
             return [str(segment["original_text"]) for segment in segments]
 
+        resolved_model_name = model_name or self.settings.gemini_model_text
+        resolved_max_output_tokens = max_output_tokens or self.settings.gemini_max_output_tokens
         prompt = (
             "Return JSON with a top-level 'translations' array. Preserve segment order exactly and return "
             f"one translated string per input segment. Translate to {target_language}."
@@ -197,18 +329,25 @@ class GeminiClient:
                     ]
                 }
             ],
-            "generationConfig": {"responseMimeType": "application/json"},
+            "generationConfig": self._build_generation_config(
+                model_name=resolved_model_name,
+                max_output_tokens=resolved_max_output_tokens,
+                thinking_mode=thinking_mode,
+                thinking_budget=thinking_budget,
+                structured_output=structured_output,
+                response_schema=self._build_translation_response_schema(),
+            ),
         }
         data = await self._generate_content(
             payload,
             self._candidate_models(
-                self.settings.gemini_model_text,
+                resolved_model_name,
                 ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
             ),
         )
 
         candidate = data["candidates"][0]["content"]["parts"][0]["text"]
-        response_payload = httpx.Response(200, text=candidate).json()
+        response_payload = self._parse_json_candidate(candidate)
         translations_payload = response_payload.get("translations")
         if not isinstance(translations_payload, list):
             raise ValueError(f"Malformed translations payload: {translations_payload!r}")

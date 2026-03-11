@@ -24,6 +24,23 @@ def ensure_project_schema(db_engine: Engine) -> None:
     missing_columns = {
         "source_language": "ALTER TABLE projects ADD COLUMN source_language VARCHAR(32)",
         "target_language": "ALTER TABLE projects ADD COLUMN target_language VARCHAR(32)",
+        "gemini_model_text": (
+            "ALTER TABLE projects ADD COLUMN gemini_model_text "
+            "VARCHAR(64) NOT NULL DEFAULT 'gemini-2.5-flash-lite'"
+        ),
+        "gemini_thinking_mode": (
+            "ALTER TABLE projects ADD COLUMN gemini_thinking_mode "
+            "VARCHAR(16) NOT NULL DEFAULT 'off'"
+        ),
+        "gemini_thinking_budget": "ALTER TABLE projects ADD COLUMN gemini_thinking_budget INTEGER",
+        "gemini_max_output_tokens": (
+            "ALTER TABLE projects ADD COLUMN gemini_max_output_tokens "
+            "INTEGER NOT NULL DEFAULT 65536"
+        ),
+        "gemini_structured_output": (
+            "ALTER TABLE projects ADD COLUMN gemini_structured_output "
+            "BOOLEAN NOT NULL DEFAULT TRUE"
+        ),
         "transcript_status": (
             "ALTER TABLE projects ADD COLUMN transcript_status "
             "VARCHAR(32) NOT NULL DEFAULT 'not_started'"

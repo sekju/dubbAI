@@ -30,6 +30,7 @@ const modeCopy = {
 } as const;
 
 const languageOptions = [
+  { value: "auto", label: "Auto detect" },
   { value: "en", label: "English" },
   { value: "pl", label: "Polish" },
   { value: "de", label: "German" },
@@ -58,6 +59,13 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sourceLanguage, setSourceLanguage] = useState("en");
   const [targetLanguage, setTargetLanguage] = useState("pl");
+  const [geminiModelText, setGeminiModelText] = useState<"gemini-2.5-flash-lite" | "gemini-2.5-flash">(
+    "gemini-2.5-flash-lite"
+  );
+  const [geminiThinkingMode, setGeminiThinkingMode] = useState<"off" | "dynamic" | "budget">("off");
+  const [geminiThinkingBudget, setGeminiThinkingBudget] = useState("1024");
+  const [geminiStructuredOutput, setGeminiStructuredOutput] = useState(true);
+  const [geminiMaxOutputTokens, setGeminiMaxOutputTokens] = useState("65536");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -66,7 +74,13 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
 
     const options: ProjectIntakeLanguages = {
       sourceLanguage: sourceLanguage || null,
-      targetLanguage: targetLanguage || null
+      targetLanguage: targetLanguage || null,
+      geminiModelText,
+      geminiThinkingMode,
+      geminiThinkingBudget:
+        geminiThinkingMode === "budget" ? Number.parseInt(geminiThinkingBudget, 10) || 1024 : null,
+      geminiMaxOutputTokens: Number.parseInt(geminiMaxOutputTokens, 10) || 65536,
+      geminiStructuredOutput
     };
 
     try {
@@ -140,8 +154,8 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
               <p className="mt-2 font-medium text-white">Transcribe, translate, review</p>
             </div>
             <div className="rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-3">
-              <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Flow</p>
-              <p className="mt-2 font-medium text-white">Source first, organization second</p>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Gemini</p>
+              <p className="mt-2 font-medium text-white">Flash-Lite fast, Flash richer</p>
             </div>
           </div>
         </div>
@@ -195,13 +209,92 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
                 >
                   <option value="">Choose target language</option>
                   {languageOptions
-                    .filter((option) => option.value !== sourceLanguage)
+                    .filter((option) => option.value !== sourceLanguage && option.value !== "auto")
                     .map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
                     ))}
                 </select>
+              </label>
+            </div>
+
+            <div className="grid gap-4 rounded-[1.5rem] border border-black/10 bg-sand/35 px-4 py-4">
+              <div className="space-y-1">
+                <p className="text-xs uppercase tracking-[0.26em] text-ember">Gemini controls</p>
+                <p className="text-sm text-ink/65">
+                  Choose latency/cost, thinking mode, max output tokens, and whether to request a strict response schema.
+                </p>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="grid gap-2 text-sm font-medium text-ink">
+                  <span>Model</span>
+                  <select
+                    aria-label="Gemini model"
+                    className="rounded-[1.25rem] border border-black/10 bg-white px-4 py-3 text-ink outline-none transition focus:border-ember/50"
+                    onChange={(event) => setGeminiModelText(event.target.value as "gemini-2.5-flash-lite" | "gemini-2.5-flash")}
+                    value={geminiModelText}
+                  >
+                    <option value="gemini-2.5-flash-lite">Flash-Lite: fast and cheap</option>
+                    <option value="gemini-2.5-flash">Flash: slower, stronger</option>
+                  </select>
+                </label>
+
+                <label className="grid gap-2 text-sm font-medium text-ink">
+                  <span>Thinking</span>
+                  <select
+                    aria-label="Gemini thinking"
+                    className="rounded-[1.25rem] border border-black/10 bg-white px-4 py-3 text-ink outline-none transition focus:border-ember/50"
+                    onChange={(event) => setGeminiThinkingMode(event.target.value as "off" | "dynamic" | "budget")}
+                    value={geminiThinkingMode}
+                  >
+                    <option value="off">Off</option>
+                    <option value="dynamic">Dynamic</option>
+                    <option value="budget">Custom budget</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="grid gap-2 text-sm font-medium text-ink">
+                  <span>Max output tokens</span>
+                  <input
+                    aria-label="Gemini max output tokens"
+                    className="rounded-[1.25rem] border border-black/10 bg-white px-4 py-3 text-ink outline-none transition focus:border-ember/50"
+                    max={65536}
+                    min={1}
+                    onChange={(event) => setGeminiMaxOutputTokens(event.target.value)}
+                    step={1}
+                    type="number"
+                    value={geminiMaxOutputTokens}
+                  />
+                </label>
+
+                <label className="grid gap-2 text-sm font-medium text-ink">
+                  <span>Thinking budget</span>
+                  <input
+                    aria-label="Gemini thinking budget"
+                    className="rounded-[1.25rem] border border-black/10 bg-white px-4 py-3 text-ink outline-none transition focus:border-ember/50 disabled:bg-sand/30"
+                    disabled={geminiThinkingMode !== "budget"}
+                    max={24576}
+                    min={0}
+                    onChange={(event) => setGeminiThinkingBudget(event.target.value)}
+                    step={1}
+                    type="number"
+                    value={geminiThinkingBudget}
+                  />
+                </label>
+              </div>
+
+              <label className="flex items-center justify-between gap-4 rounded-[1.25rem] border border-black/10 bg-white px-4 py-3 text-sm font-medium text-ink">
+                <span>Structured output schema</span>
+                <input
+                  aria-label="Structured output schema"
+                  checked={geminiStructuredOutput}
+                  onChange={(event) => setGeminiStructuredOutput(event.target.checked)}
+                  type="checkbox"
+                />
               </label>
             </div>
 
@@ -246,7 +339,8 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
               <p className="font-semibold text-ink">What happens next</p>
               <p className="mt-2 leading-6">
                 The project lands in the task list immediately. English defaults to Polish, Polish
-                defaults to English, and other sources need an explicit target before you continue.
+                defaults to English, `Auto detect` lets Gemini infer the source language, and the
+                selected Gemini controls stay with the project for retry and translation.
               </p>
             </div>
 

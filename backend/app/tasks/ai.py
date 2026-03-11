@@ -249,7 +249,18 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
         job.progress = 45
         db.commit()
 
-        payload = asyncio.run(GeminiClient().transcribe_translate(audio_path.read_bytes()))
+        payload = asyncio.run(
+            GeminiClient().transcribe_translate(
+                audio_path.read_bytes(),
+                target_language=project.target_language or "pl",
+                source_language=project.source_language,
+                model_name=project.gemini_model_text,
+                thinking_mode=project.gemini_thinking_mode,
+                thinking_budget=project.gemini_thinking_budget,
+                max_output_tokens=project.gemini_max_output_tokens,
+                structured_output=project.gemini_structured_output,
+            )
+        )
         words = payload.get("words", [])
         if not words:
             raise RuntimeError("Gemini returned no transcript words")
@@ -321,6 +332,11 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
                     for word in words
                 ],
                 target_language=project.target_language or "pl",
+                model_name=project.gemini_model_text,
+                thinking_mode=project.gemini_thinking_mode,
+                thinking_budget=project.gemini_thinking_budget,
+                max_output_tokens=project.gemini_max_output_tokens,
+                structured_output=project.gemini_structured_output,
             )
         )
 

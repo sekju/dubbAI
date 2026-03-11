@@ -52,6 +52,23 @@ class RecordingAsyncClient(FakeAsyncClient):
         return await super().post(url, params=params, json=json)
 
 
+class SequentialAsyncClient:
+    def __init__(self, responses):
+        self.responses = responses
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, params=None, json=None):
+        response = self.responses.pop(0)
+        if response.status_code >= 400:
+            raise httpx.HTTPStatusError("boom", request=httpx.Request("POST", url), response=response)
+        return response
+
+
 def test_transcribe_translate_retries_with_supported_fallback_model(monkeypatch) -> None:
     responses = {
         "gemini-3.1-flash-lite": _response(
@@ -204,6 +221,163 @@ def test_transcribe_translate_accepts_top_level_word_array(monkeypatch) -> None:
             "keyword": False,
         }
     ]
+
+
+def test_transcribe_translate_defaults_missing_keyword_to_false(monkeypatch) -> None:
+    responses = {
+        "gemini-2.5-flash-lite": _response(
+            200,
+            "gemini-2.5-flash-lite",
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "words": [
+                                                {
+                                                    "start": "0:00.000",
+                                                    "end": "0:00.240",
+                                                    "text": "Hello,"
+                                                }
+                                            ]
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+    }
+    monkeypatch.setattr("app.services.gemini.httpx.AsyncClient", lambda timeout: FakeAsyncClient(responses))
+
+    client = GeminiClient()
+    client.settings.gemini_api_key = "test-key"
+    client.settings.gemini_model_text = "gemini-2.5-flash-lite"
+
+    payload = asyncio.run(client.transcribe_translate(b"audio"))
+
+    assert payload["words"] == [
+        {
+            "position": 1,
+            "start_ms": 0,
+            "end_ms": 240,
+            "original_text": "Hello,",
+            "keyword": False,
+        }
+    ]
+
+
+def test_transcribe_translate_retries_once_after_malformed_json(monkeypatch) -> None:
+    responses = [
+        _response(
+            200,
+            "gemini-2.5-flash-lite",
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"text": '{"words":[{"start":"0:00.000"'}]
+                        }
+                    }
+                ]
+            },
+        ),
+        _response(
+            200,
+            "gemini-2.5-flash-lite",
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "words": [
+                                                {
+                                                    "start": "0:00.000",
+                                                    "end": "0:00.240",
+                                                    "text": "Hello,",
+                                                    "keyword": False,
+                                                }
+                                            ]
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "app.services.gemini.httpx.AsyncClient",
+        lambda timeout: SequentialAsyncClient(responses),
+    )
+
+    client = GeminiClient()
+    client.settings.gemini_api_key = "test-key"
+    client.settings.gemini_model_text = "gemini-2.5-flash-lite"
+
+    payload = asyncio.run(client.transcribe_translate(b"audio"))
+
+    assert payload["words"][0]["original_text"] == "Hello,"
+
+
+def test_transcribe_translate_retries_once_after_empty_words(monkeypatch) -> None:
+    responses = [
+        _response(
+            200,
+            "gemini-2.5-flash-lite",
+            {"candidates": [{"content": {"parts": [{"text": json.dumps({"words": []})}]}}]},
+        ),
+        _response(
+            200,
+            "gemini-2.5-flash-lite",
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "words": [
+                                                {
+                                                    "start": "0:00.000",
+                                                    "end": "0:00.240",
+                                                    "text": "Hello,",
+                                                    "keyword": False,
+                                                }
+                                            ]
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "app.services.gemini.httpx.AsyncClient",
+        lambda timeout: SequentialAsyncClient(responses),
+    )
+
+    client = GeminiClient()
+    client.settings.gemini_api_key = "test-key"
+    client.settings.gemini_model_text = "gemini-2.5-flash-lite"
+
+    payload = asyncio.run(client.transcribe_translate(b"audio"))
+
+    assert payload["words"][0]["original_text"] == "Hello,"
 
 
 def test_transcribe_translate_rejects_malformed_word_payload(monkeypatch) -> None:

@@ -349,4 +349,37 @@ describe("Library actions", () => {
     );
     expect(await screen.findByRole("article", { name: /remote clip/i })).toBeInTheDocument();
   });
+
+  it("polls queued pipeline work and updates the card without manual refresh", async () => {
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+
+    startProjectTranscription.mockResolvedValue({
+      jobId: "job-transcribe",
+      projectId: "project-1",
+      state: "queued",
+      progress: 0,
+      queue: "transcribe"
+    });
+    fetchLibrary.mockResolvedValue({
+      ...sampleLibrary,
+      projects: sampleLibrary.projects.map((project) =>
+        project.id === "project-1"
+          ? {
+              ...project,
+              status: "transcription_failed",
+              transcriptStatus: "failed",
+              nextAction: "retry" as const
+            }
+          : project
+      )
+    });
+
+    render(<LibraryShell initialData={sampleLibrary} />);
+
+    const freepikCard = screen.getByRole("article", { name: /freepik 03/i });
+    fireEvent.click(within(freepikCard).getByRole("button", { name: /transcribe/i }));
+
+    await waitFor(() => expect(startProjectTranscription).toHaveBeenCalledWith("project-1"));
+    await waitFor(() => expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 5000));
+  });
 });

@@ -424,7 +424,7 @@ def test_transcription_only_completion_hides_translation_output_in_project_detai
         audio_path.write_bytes(b"audio")
 
     class FakeGeminiClient:
-        async def transcribe_translate(self, audio_bytes: bytes) -> dict[str, object]:
+        async def transcribe_translate(self, audio_bytes: bytes, **_: object) -> dict[str, object]:
             assert audio_bytes == b"audio"
             return {
                 "words": [
@@ -509,6 +509,7 @@ def test_translate_task_marks_project_failed_and_clears_translation_output(monke
             self,
             segments: list[dict[str, object]],
             target_language: str = "pl",
+            **_: object,
         ) -> list[str]:
             assert target_language == "pl"
             assert len(segments) == 1
@@ -727,6 +728,7 @@ def test_translate_task_updates_existing_words_and_rebuilds_segments(monkeypatch
             self,
             segments: list[dict[str, object]],
             target_language: str = "pl",
+            **_: object,
         ) -> list[str]:
             assert target_language == "pl"
             assert segments == [

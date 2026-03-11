@@ -248,6 +248,29 @@ export function LibraryShell({ initialData }: LibraryShellProps) {
     }
   }
 
+  useEffect(() => {
+    const hasRunningPipeline = projects.some(
+      (project) =>
+        project.transcriptStatus === "queued" ||
+        project.transcriptStatus === "in_progress" ||
+        project.translationStatus === "queued" ||
+        project.translationStatus === "in_progress"
+    );
+
+    if (!hasRunningPipeline) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(async () => {
+      const nextLibrary = await fetchLibrary();
+      setLibraryData(nextLibrary);
+    }, 5000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [projects, setLibraryData]);
+
   async function handleUploadProject(name: string, file: File, options?: ProjectIntakeLanguages) {
     const job = await createProjectFromUpload(name, file, options);
     await refreshLibrary(job.projectId);

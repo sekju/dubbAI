@@ -12,6 +12,11 @@ class ProjectCreateRequest(BaseModel):
     source_url: str | None = None
     source_language: str | None = None
     target_language: str | None = None
+    gemini_model_text: Literal["gemini-2.5-flash-lite", "gemini-2.5-flash"] | None = None
+    gemini_thinking_mode: Literal["off", "dynamic", "budget"] | None = None
+    gemini_thinking_budget: int | None = None
+    gemini_max_output_tokens: int | None = None
+    gemini_structured_output: bool | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -35,3 +40,8 @@ class ProjectImportRequest(BaseModel):
     source_url: str = Field(min_length=8)
     source_language: str | None = None
     target_language: str | None = None
+    gemini_model_text: Literal["gemini-2.5-flash-lite", "gemini-2.5-flash"] | None = None
+    gemini_thinking_mode: Literal["off", "dynamic", "budget"] | None = None
+    gemini_thinking_budget: int | None = None
+    gemini_max_output_tokens: int | None = None
+    gemini_structured_output: bool | None = None

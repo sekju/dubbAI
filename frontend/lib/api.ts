@@ -277,6 +277,21 @@ export async function createProjectFromUpload(
   if (options?.targetLanguage) {
     formData.set("target_language", options.targetLanguage);
   }
+  if (options?.geminiModelText) {
+    formData.set("gemini_model_text", options.geminiModelText);
+  }
+  if (options?.geminiThinkingMode) {
+    formData.set("gemini_thinking_mode", options.geminiThinkingMode);
+  }
+  if (options?.geminiThinkingBudget != null) {
+    formData.set("gemini_thinking_budget", String(options.geminiThinkingBudget));
+  }
+  if (options?.geminiMaxOutputTokens != null) {
+    formData.set("gemini_max_output_tokens", String(options.geminiMaxOutputTokens));
+  }
+  if (options?.geminiStructuredOutput != null) {
+    formData.set("gemini_structured_output", String(options.geminiStructuredOutput));
+  }
 
   const response = await fetch(`${getApiBaseUrl()}/api/projects/upload`, {
     method: "POST",
@@ -304,7 +319,12 @@ export async function createProjectFromUrl(
       name,
       source_url: sourceUrl,
       source_language: options?.sourceLanguage ?? null,
-      target_language: options?.targetLanguage ?? null
+      target_language: options?.targetLanguage ?? null,
+      gemini_model_text: options?.geminiModelText ?? null,
+      gemini_thinking_mode: options?.geminiThinkingMode ?? null,
+      gemini_thinking_budget: options?.geminiThinkingBudget ?? null,
+      gemini_max_output_tokens: options?.geminiMaxOutputTokens ?? null,
+      gemini_structured_output: options?.geminiStructuredOutput ?? null
     })
   });
 

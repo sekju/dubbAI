@@ -99,6 +99,38 @@ def test_url_project_creates_detail_record(client) -> None:
     )
 
 
+def test_project_intake_persists_auto_language_and_gemini_controls(client) -> None:
+    response = client.post(
+        "/api/projects/import",
+        json={
+            "name": "Controlled clip",
+            "source_url": "https://example.com/video",
+            "source_language": "auto",
+            "target_language": "en",
+            "gemini_model_text": "gemini-2.5-flash",
+            "gemini_thinking_mode": "budget",
+            "gemini_thinking_budget": 2048,
+            "gemini_max_output_tokens": 65536,
+            "gemini_structured_output": True,
+        },
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+
+    with SessionLocal() as db:
+        project = db.get(Project, payload["project_id"])
+
+        assert project is not None
+        assert project.source_language == "auto"
+        assert project.target_language == "en"
+        assert project.gemini_model_text == "gemini-2.5-flash"
+        assert project.gemini_thinking_mode == "budget"
+        assert project.gemini_thinking_budget == 2048
+        assert project.gemini_max_output_tokens == 65536
+        assert project.gemini_structured_output is True
+
+
 def test_transcribe_endpoint_creates_ai_job_and_dispatches_task(client, monkeypatch) -> None:
     create_response = client.post(
         "/api/projects/import",
@@ -158,7 +190,7 @@ def test_transcribe_task_sets_transcript_status_in_progress_and_ready(monkeypatc
         audio_path.write_bytes(b"audio")
 
     class FakeGeminiClient:
-        async def transcribe_translate(self, audio_bytes: bytes) -> dict[str, object]:
+        async def transcribe_translate(self, audio_bytes: bytes, **_: object) -> dict[str, object]:
             assert audio_bytes == b"audio"
             return {
                 "words": [
@@ -287,7 +319,7 @@ def test_transcribe_task_fails_when_gemini_returns_no_segments(monkeypatch) -> N
         audio_path.write_bytes(b"audio")
 
     class FakeGeminiClient:
-        async def transcribe_translate(self, audio_bytes: bytes) -> dict[str, object]:
+        async def transcribe_translate(self, audio_bytes: bytes, **_: object) -> dict[str, object]:
             assert audio_bytes == b"audio"
             return {"words": []}
 

@@ -25,6 +25,8 @@ TRANSCRIBE_QUEUE = "app.tasks.ai.transcribe_project"
 TRANSLATE_QUEUE = "app.tasks.ai.translate_project"
 LANGUAGE_CODE_MAX_LENGTH = 32
 ACTIVE_STAGE_STATUSES = {"queued", "in_progress"}
+SUPPORTED_GEMINI_TEXT_MODELS = {"gemini-2.5-flash-lite", "gemini-2.5-flash"}
+SUPPORTED_THINKING_MODES = {"off", "dynamic", "budget"}
 TRANSLATION_ONLY_LEGACY_STATUSES = {
     "translation_queued",
     "translating",
@@ -61,6 +63,51 @@ def _normalize_language_code(language: str | None) -> str | None:
             detail=f"Language code must be at most {LANGUAGE_CODE_MAX_LENGTH} characters",
         )
     return normalized
+
+
+def _normalize_gemini_model(model_name: str | None, *, default: str) -> str:
+    normalized = (model_name or default).strip().lower()
+    if normalized not in SUPPORTED_GEMINI_TEXT_MODELS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Unsupported Gemini text model",
+        )
+    return normalized
+
+
+def _normalize_thinking_mode(mode: str | None, *, default: str) -> str:
+    normalized = (mode or default).strip().lower()
+    if normalized not in SUPPORTED_THINKING_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Unsupported Gemini thinking mode",
+        )
+    return normalized
+
+
+def _normalize_max_output_tokens(value: int | None, *, default: int) -> int:
+    resolved = value if value is not None else default
+    if resolved < 1 or resolved > 65536:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Gemini max output tokens must be between 1 and 65536",
+        )
+    return resolved
+
+
+def _normalize_thinking_budget(value: int | None, *, mode: str) -> int | None:
+    if mode == "off":
+        return None
+    if mode == "dynamic":
+        return -1
+
+    resolved = value if value is not None else 1024
+    if resolved < 0 or resolved > 24576:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Gemini thinking budget must be between 0 and 24576",
+        )
+    return resolved
 
 def _serialize_segments(
     segments: list[TranscriptSegment],
@@ -385,10 +432,34 @@ def create_project_with_job(
     source_url: str,
     source_language: str | None = None,
     target_language: str | None = None,
+    gemini_model_text: str | None = None,
+    gemini_thinking_mode: str | None = None,
+    gemini_thinking_budget: int | None = None,
+    gemini_max_output_tokens: int | None = None,
+    gemini_structured_output: bool | None = None,
     status_value: str,
 ) -> JobStatusResponse:
+    from app.core.config import get_settings
+
+    settings = get_settings()
     normalized_source_language = _normalize_language_code(source_language)
     normalized_target_language = _normalize_language_code(target_language)
+    normalized_model_name = _normalize_gemini_model(
+        gemini_model_text,
+        default=settings.gemini_model_text,
+    )
+    normalized_thinking_mode = _normalize_thinking_mode(
+        gemini_thinking_mode,
+        default=settings.gemini_thinking_mode,
+    )
+    normalized_max_output_tokens = _normalize_max_output_tokens(
+        gemini_max_output_tokens,
+        default=settings.gemini_max_output_tokens,
+    )
+    normalized_thinking_budget = _normalize_thinking_budget(
+        gemini_thinking_budget,
+        mode=normalized_thinking_mode,
+    )
 
     project = Project(
         id=str(uuid4()),
@@ -398,6 +469,13 @@ def create_project_with_job(
         source_url=source_url,
         source_language=normalized_source_language,
         target_language=_resolve_target_language(normalized_source_language, normalized_target_language),
+        gemini_model_text=normalized_model_name,
+        gemini_thinking_mode=normalized_thinking_mode,
+        gemini_thinking_budget=normalized_thinking_budget,
+        gemini_max_output_tokens=normalized_max_output_tokens,
+        gemini_structured_output=(
+            settings.gemini_structured_output if gemini_structured_output is None else gemini_structured_output
+        ),
         status=status_value,
     )
     job = PipelineJob(

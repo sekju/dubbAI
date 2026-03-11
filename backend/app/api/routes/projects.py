@@ -47,6 +47,11 @@ async def import_project(
         source_url=payload.source_url,
         source_language=payload.source_language,
         target_language=payload.target_language,
+        gemini_model_text=payload.gemini_model_text,
+        gemini_thinking_mode=payload.gemini_thinking_mode,
+        gemini_thinking_budget=payload.gemini_thinking_budget,
+        gemini_max_output_tokens=payload.gemini_max_output_tokens,
+        gemini_structured_output=payload.gemini_structured_output,
         status_value="queued",
     )
 
@@ -56,6 +61,11 @@ async def upload_project(
     name: str = Form(...),
     source_language: str | None = Form(None),
     target_language: str | None = Form(None),
+    gemini_model_text: str | None = Form(None),
+    gemini_thinking_mode: str | None = Form(None),
+    gemini_thinking_budget: int | None = Form(None),
+    gemini_max_output_tokens: int | None = Form(None),
+    gemini_structured_output: bool | None = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ) -> JobStatusResponse:
@@ -66,6 +76,11 @@ async def upload_project(
         source_url="pending",
         source_language=source_language,
         target_language=target_language,
+        gemini_model_text=gemini_model_text,
+        gemini_thinking_mode=gemini_thinking_mode,
+        gemini_thinking_budget=gemini_thinking_budget,
+        gemini_max_output_tokens=gemini_max_output_tokens,
+        gemini_structured_output=gemini_structured_output,
         status_value="uploaded",
     )
     settings = get_settings()
