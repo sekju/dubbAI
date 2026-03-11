@@ -29,10 +29,13 @@ export function LibrarySidebar({
     <aside className="rounded-[1.75rem] border border-black/10 bg-[#111318] p-5 text-white shadow-panel">
       <div className="space-y-6">
         <div>
-          <p className="text-xs uppercase tracking-[0.32em] text-aqua/80">Library</p>
+          <p className="text-xs uppercase tracking-[0.32em] text-aqua/80">Organization</p>
           <h2 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold text-sand">
-            Collections
+            Organize Library
           </h2>
+          <p className="mt-3 text-sm leading-6 text-fog/75">
+            Use folders and playlists to group projects after you have started the pipeline work.
+          </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <button
               className="rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"

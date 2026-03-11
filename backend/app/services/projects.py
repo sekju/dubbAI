@@ -1,14 +1,14 @@
 from uuid import uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
 from app.models.folder import Folder
 from app.models.job import PipelineJob
 from app.models.playlist import Playlist, PlaylistItem
 from app.models.project import Project
-from app.models.transcript import TranscriptSegment
+from app.models.transcript import TranscriptSegment, TranscriptWord
 from app.schemas.job import JobStatusResponse
 from app.schemas.library import (
     FolderResponse,
@@ -18,7 +18,7 @@ from app.schemas.library import (
     PlaylistResponse,
 )
 from app.schemas.project import ProjectResponse
-from app.schemas.transcript import TranscriptChunk
+from app.schemas.transcript import TranscriptChunk, TranscriptWordPayload
 
 INGEST_QUEUE = "app.tasks.ingest.ingest_source"
 TRANSCRIBE_QUEUE = "app.tasks.ai.transcribe_project"
@@ -31,6 +31,11 @@ TRANSLATION_ONLY_LEGACY_STATUSES = {
     "translated",
     "translation_failed",
 }
+
+LEGACY_TRANSCRIPT_PLACEHOLDER_PREFIXES = (
+    "transcript placeholder",
+    "placeholder transcript",
+)
 
 
 def _resolve_target_language(source_language: str | None, target_language: str | None) -> str | None:
@@ -75,6 +80,31 @@ def _serialize_segments(
     ]
 
 
+def _serialize_words(words: list[TranscriptWord]) -> list[TranscriptWordPayload]:
+    return [
+        TranscriptWordPayload(
+            position=word.position,
+            start_ms=word.start_ms,
+            end_ms=word.end_ms,
+            original_text=word.original_text,
+            translated_text=word.translated_text,
+            keyword=word.keyword,
+        )
+        for word in words
+    ]
+
+
+def _load_transcript_words(db: Session, project: Project) -> list[TranscriptWord]:
+    if not inspect(db.bind).has_table("transcript_words"):
+        return []
+
+    return db.scalars(
+        select(TranscriptWord)
+        .where(TranscriptWord.project_id == project.id)
+        .order_by(TranscriptWord.position.asc())
+    ).all()
+
+
 def _should_include_translation(
     project: Project,
     segments: list[TranscriptSegment],
@@ -82,6 +112,67 @@ def _should_include_translation(
     if project.translation_status == "not_started":
         return False
     return any(segment.translated_text for segment in segments)
+
+
+def _is_legacy_transcript_placeholder(text: str) -> bool:
+    normalized = text.strip().lower()
+    return any(normalized.startswith(prefix) for prefix in LEGACY_TRANSCRIPT_PLACEHOLDER_PREFIXES)
+
+
+def _looks_like_malformed_translation(text: str) -> bool:
+    normalized = text.strip()
+    if not normalized:
+        return False
+    return (
+        (normalized.startswith("{") or normalized.startswith("["))
+        and "translated_text" in normalized
+    )
+
+
+def _heal_stale_pipeline_state(
+    db: Session,
+    project: Project,
+    segments: list[TranscriptSegment],
+    words: list[TranscriptWord],
+    *,
+    active_job: JobStatusResponse | None,
+) -> None:
+    state_changed = False
+
+    if active_job is None and (
+        any(_is_legacy_transcript_placeholder(segment.original_text) for segment in segments)
+        or (
+            project.transcript_status == "ready"
+            and not words
+            and any(_is_legacy_transcript_placeholder(segment.original_text) for segment in segments)
+        )
+    ):
+        project.status = "transcription_failed"
+        project.transcript_status = "failed"
+        state_changed = True
+
+    if active_job is None and any(_looks_like_malformed_translation(word.translated_text) for word in words):
+        project.status = "translation_failed"
+        project.translation_status = "failed"
+        state_changed = True
+
+    if active_job is None and project.transcript_status in ACTIVE_STAGE_STATUSES:
+        if project.status == "transcribed" or segments:
+            project.transcript_status = "ready"
+            state_changed = True
+        elif project.status == "transcription_failed":
+            project.transcript_status = "failed"
+            state_changed = True
+
+    if active_job is None and project.translation_status in ACTIVE_STAGE_STATUSES:
+        if any(segment.translated_text for segment in segments):
+            project.translation_status = "ready"
+            state_changed = True
+
+    if state_changed:
+        db.add(project)
+        db.commit()
+        db.refresh(project)
 
 
 def _legacy_compatible_status(project: Project) -> str:
@@ -96,6 +187,36 @@ def _legacy_compatible_status(project: Project) -> str:
     if project.transcript_status == "failed":
         return "transcription_failed"
     return "queued"
+
+
+def _get_active_job_for_project(db: Session, project: Project) -> JobStatusResponse | None:
+    active_queues: list[str] = []
+
+    if project.transcript_status in ACTIVE_STAGE_STATUSES:
+        active_queues.append(TRANSCRIBE_QUEUE)
+    if project.translation_status in ACTIVE_STAGE_STATUSES:
+        active_queues.append(TRANSLATE_QUEUE)
+
+    if not active_queues:
+        return None
+
+    active_job = db.scalars(
+        select(PipelineJob)
+        .where(PipelineJob.project_id == project.id)
+        .where(PipelineJob.queue.in_(active_queues))
+        .where(PipelineJob.state.in_(("queued", "started", "retry")))
+    ).first()
+
+    if active_job is None:
+        return None
+
+    return JobStatusResponse(
+        job_id=active_job.id,
+        project_id=active_job.project_id,
+        state=active_job.state,
+        progress=active_job.progress,
+        queue=active_job.queue,
+    )
 
 
 def _derive_library_next_action(project: Project) -> str:
@@ -119,10 +240,33 @@ def _derive_library_next_action(project: Project) -> str:
 
 
 def _clear_translated_segments(db: Session, project: Project) -> None:
-    db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).update(
-        {TranscriptSegment.translated_text: ""},
-        synchronize_session=False,
-    )
+    db_engine = db.get_bind()
+    inspector = inspect(db_engine)
+
+    if inspector.has_table("transcript_segments"):
+        db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).update(
+            {TranscriptSegment.translated_text: ""},
+            synchronize_session=False,
+        )
+    if inspector.has_table("transcript_words"):
+        db.query(TranscriptWord).filter(TranscriptWord.project_id == project.id).update(
+            {TranscriptWord.translated_text: ""},
+            synchronize_session=False,
+        )
+
+
+def _clear_transcript_output(db: Session, project: Project) -> None:
+    db_engine = db.get_bind()
+    inspector = inspect(db_engine)
+
+    if inspector.has_table("transcript_segments"):
+        db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).delete(
+            synchronize_session=False
+        )
+    if inspector.has_table("transcript_words"):
+        db.query(TranscriptWord).filter(TranscriptWord.project_id == project.id).delete(
+            synchronize_session=False
+        )
 
 
 def _validate_pipeline_transition(project: Project, *, queue: str) -> None:
@@ -140,7 +284,7 @@ def _validate_pipeline_transition(project: Project, *, queue: str) -> None:
         return
 
     if queue == TRANSLATE_QUEUE:
-        if project.translation_status != "not_started":
+        if project.translation_status in {"queued", "in_progress", "ready"}:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Translation has already been started for this project",
@@ -163,6 +307,10 @@ def serialize_project(db: Session, project: Project) -> ProjectResponse:
         .where(TranscriptSegment.project_id == project.id)
         .order_by(TranscriptSegment.start_ms.asc())
     ).all()
+    words = _load_transcript_words(db, project)
+    active_job = _get_active_job_for_project(db, project)
+    _heal_stale_pipeline_state(db, project, segments, words, active_job=active_job)
+    active_job = _get_active_job_for_project(db, project)
     return ProjectResponse(
         id=project.id,
         name=project.name,
@@ -174,14 +322,25 @@ def serialize_project(db: Session, project: Project) -> ProjectResponse:
         transcript_status=project.transcript_status,
         translation_status=project.translation_status,
         dubbing_status=project.dubbing_status,
+        active_job=active_job,
         transcript_segments=_serialize_segments(
             segments,
             include_translation=_should_include_translation(project, segments),
         ),
+        transcript_words=_serialize_words(words),
     )
 
 
-def serialize_library_project(project: Project) -> LibraryProjectResponse:
+def serialize_library_project(db: Session, project: Project) -> LibraryProjectResponse:
+    segments = db.scalars(
+        select(TranscriptSegment)
+        .where(TranscriptSegment.project_id == project.id)
+        .order_by(TranscriptSegment.start_ms.asc())
+    ).all()
+    words = _load_transcript_words(db, project)
+    active_job = _get_active_job_for_project(db, project)
+    _heal_stale_pipeline_state(db, project, segments, words, active_job=active_job)
+    active_job = _get_active_job_for_project(db, project)
     return LibraryProjectResponse(
         id=project.id,
         name=project.name,
@@ -195,6 +354,7 @@ def serialize_library_project(project: Project) -> LibraryProjectResponse:
         dubbing_status=project.dubbing_status,
         next_action=_derive_library_next_action(project),
         folder_id=project.folder_id,
+        active_job=active_job,
     )
 
 
@@ -265,9 +425,13 @@ def create_job_for_project(db: Session, *, project_id: str, queue: str) -> JobSt
     _validate_pipeline_transition(project, queue=queue)
 
     if queue == TRANSCRIBE_QUEUE:
+        if project.transcript_status == "failed":
+            _clear_transcript_output(db, project)
         project.status = "transcription_queued"
         project.transcript_status = "queued"
     if queue == TRANSLATE_QUEUE:
+        if project.translation_status == "failed":
+            _clear_translated_segments(db, project)
         project.translation_status = "queued"
 
     job = PipelineJob(
@@ -301,7 +465,7 @@ def get_library_data(db: Session) -> LibraryResponse:
     return LibraryResponse(
         folders=[serialize_folder(folder) for folder in folders],
         playlists=[serialize_playlist(playlist) for playlist in playlists],
-        projects=[serialize_library_project(project) for project in projects],
+        projects=[serialize_library_project(db, project) for project in projects],
     )
 
 
@@ -356,7 +520,7 @@ def assign_project_to_folder(db: Session, *, project_id: str, folder_id: str) ->
     db.add(project)
     db.commit()
     db.refresh(project)
-    return serialize_library_project(project)
+    return serialize_library_project(db, project)
 
 
 def add_project_to_playlist(db: Session, *, playlist_id: str, project_id: str) -> PlaylistResponse:

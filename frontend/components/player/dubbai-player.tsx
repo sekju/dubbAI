@@ -3,13 +3,18 @@
 import clsx from "clsx";
 import React, { useEffect, useRef } from "react";
 
-import type { TranscriptCue } from "@/lib/types";
-import { usePlayerStore, type SubtitleMode } from "@/store/use-player-store";
+import { groupTranscriptWords } from "@/lib/transcript-rendering";
+import type { TranscriptWord, TranscriptWordGroup } from "@/lib/types";
+import {
+  usePlayerStore,
+  type SecondarySubtitleTrackSource,
+  type SubtitleTrackSource
+} from "@/store/use-player-store";
 
 type DubbAIPlayerProps = {
   src: string;
   dubbingSrc?: string | null;
-  cues: TranscriptCue[];
+  transcriptWords: TranscriptWord[];
   onAutoplayNext?: () => void;
 };
 
@@ -21,37 +26,6 @@ const densityOptions = [
 
 const playbackRates = [1, 1.25, 1.5] as const;
 
-const subtitleModes: Array<{ value: SubtitleMode; label: string }> = [
-  { value: "dual", label: "Dual" },
-  { value: "translation", label: "Translation" },
-  { value: "original", label: "Original" }
-];
-
-function getActiveCue(cues: TranscriptCue[], currentTimeMs: number): TranscriptCue | undefined {
-  return cues.find((cue) => currentTimeMs >= cue.startMs && currentTimeMs <= cue.endMs) ?? cues[0];
-}
-
-function getWordLimit(density: "compact" | "balanced" | "sentence"): number {
-  if (density === "compact") {
-    return 3;
-  }
-  if (density === "balanced") {
-    return 6;
-  }
-  return Number.POSITIVE_INFINITY;
-}
-
-function truncateSubtitle(text: string, density: "compact" | "balanced" | "sentence"): string {
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  const limit = getWordLimit(density);
-
-  if (limit === Number.POSITIVE_INFINITY || words.length <= limit) {
-    return words.join(" ");
-  }
-
-  return words.slice(0, limit).join(" ");
-}
-
 function formatTimestamp(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -60,18 +34,41 @@ function formatTimestamp(ms: number): string {
   return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }
 
+function getTrackWords(
+  cue: TranscriptWordGroup | undefined,
+  track: SubtitleTrackSource | SecondarySubtitleTrackSource
+) {
+  if (!cue || track === "off") {
+    return [];
+  }
+
+  return cue.words
+    .map((word) => ({
+      position: word.position,
+      text: track === "translation" ? word.translatedText : word.originalText,
+      keyword: word.keyword,
+      startMs: word.startMs,
+      endMs: word.endMs,
+    }))
+    .filter((word) => word.text.trim().length > 0);
+}
+
 export function DubbAIPlayer({
   src,
   dubbingSrc = null,
-  cues,
+  transcriptWords,
   onAutoplayNext
 }: DubbAIPlayerProps) {
+  const containerRef = useRef<HTMLElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const dubbingRef = useRef<HTMLAudioElement | null>(null);
   const hideOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const {
     density,
-    subtitleMode,
+    primaryTrack,
+    secondaryTrack,
+    primaryTiktokMode,
+    secondaryTiktokMode,
     currentTimeMs,
     durationMs,
     isPlaying,
@@ -82,24 +79,70 @@ export function DubbAIPlayer({
     overlayVisible,
     settingsOpen,
     setDensity,
-    setSubtitleMode,
+    setPrimaryTrack,
+    setSecondaryTrack,
     setCurrentTimeMs,
     setDurationMs,
     setIsPlaying,
     setVolume,
     setPlaybackRate,
     toggleAutoplay,
-    toggleFullscreen,
+    swapTracks,
+    togglePrimaryTiktokMode,
+    toggleSecondaryTiktokMode,
+    setIsFullscreen,
     setOverlayVisible,
     toggleSettingsOpen
   } = usePlayerStore();
 
-  const activeCue = getActiveCue(cues, currentTimeMs);
-  const translatedLine = truncateSubtitle(
-    activeCue?.translatedText ?? "Translated subtitles will appear here",
-    density
-  );
-  const originalLine = truncateSubtitle(activeCue?.originalText ?? "Original subtitles", density);
+  const originalGroups = groupTranscriptWords(transcriptWords, density, "original");
+  const translationGroups = groupTranscriptWords(transcriptWords, density, "translation");
+  const activePrimaryGroup =
+    (primaryTrack === "translation" ? translationGroups : originalGroups).find(
+      (group) => currentTimeMs >= group.startMs && currentTimeMs <= group.endMs
+    ) ?? (primaryTrack === "translation" ? translationGroups[0] : originalGroups[0]);
+  const activeSecondaryGroup =
+    secondaryTrack === "off"
+      ? undefined
+      : (secondaryTrack === "translation" ? translationGroups : originalGroups).find(
+            (group) => currentTimeMs >= group.startMs && currentTimeMs <= group.endMs
+          ) ?? (secondaryTrack === "translation" ? translationGroups[0] : originalGroups[0]);
+  const primaryWords = getTrackWords(activePrimaryGroup, primaryTrack);
+  const secondaryWords = getTrackWords(activeSecondaryGroup, secondaryTrack);
+
+  function renderTrackWords(
+    trackWords: typeof primaryWords,
+    trackId: "primary" | "secondary",
+    fallback: string,
+    tiktokEnabled: boolean
+  ) {
+    if (!trackWords.length) {
+      return fallback;
+    }
+
+    return trackWords.map((word) => (
+      <span
+        className={clsx(
+          "inline transition",
+          word.keyword ? "text-aqua" : "",
+          currentTimeMs >= word.startMs && currentTimeMs <= word.endMs
+            ? "rounded-md bg-white px-1 text-ink"
+            : "",
+          tiktokEnabled && currentTimeMs >= word.startMs && currentTimeMs <= word.endMs
+            ? "scale-[1.05] font-bold"
+            : ""
+        )}
+        data-active={currentTimeMs >= word.startMs && currentTimeMs <= word.endMs ? "true" : "false"}
+        data-keyword={word.keyword ? "true" : "false"}
+        data-tiktok={tiktokEnabled ? "true" : "false"}
+        data-testid={`subtitle-${trackId}-word-${word.position}`}
+        key={`${trackId}-${word.position}`}
+      >
+        {word.text}
+        {" "}
+      </span>
+    ));
+  }
 
   function clearOverlayTimer() {
     if (hideOverlayTimerRef.current) {
@@ -170,6 +213,21 @@ export function DubbAIPlayer({
     showOverlay();
   }
 
+  async function toggleBrowserFullscreen() {
+    const container = containerRef.current;
+
+    if (!container) {
+      return;
+    }
+
+    if (document.fullscreenElement === container) {
+      await document.exitFullscreen?.();
+      return;
+    }
+
+    await container.requestFullscreen?.();
+  }
+
   useEffect(() => {
     showOverlay();
 
@@ -177,6 +235,18 @@ export function DubbAIPlayer({
       clearOverlayTimer();
     };
   }, []);
+
+  useEffect(() => {
+    function handleFullscreenChange() {
+      setIsFullscreen(document.fullscreenElement === containerRef.current);
+    }
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, [setIsFullscreen]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -281,7 +351,7 @@ export function DubbAIPlayer({
         return;
       }
       if (key === "f") {
-        toggleFullscreen();
+        void toggleBrowserFullscreen();
         showOverlay();
       }
     }
@@ -291,7 +361,7 @@ export function DubbAIPlayer({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isPlaying, setVolume, toggleFullscreen, volume]);
+  }, [isPlaying, setVolume, volume]);
 
   return (
     <section
@@ -299,6 +369,8 @@ export function DubbAIPlayer({
         "overflow-hidden rounded-[2rem] border border-black/10 bg-[#0a1016] text-white shadow-[0_35px_80px_rgba(10,16,22,0.18)]",
         isFullscreen ? "ring-1 ring-aqua/35" : ""
       )}
+      data-testid="player-frame"
+      ref={containerRef}
     >
       <div className="relative overflow-hidden rounded-[1.75rem] bg-black">
         <video
@@ -310,14 +382,28 @@ export function DubbAIPlayer({
         {dubbingSrc ? <audio className="hidden" ref={dubbingRef} src={dubbingSrc} /> : null}
 
         <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/70 to-transparent px-5 pb-24 pt-20 md:px-7">
-          {subtitleMode !== "original" ? (
-            <p className="max-w-4xl text-[clamp(1.5rem,3vw,2.75rem)] font-semibold leading-tight tracking-[-0.03em] text-[#f5f1e8]">
-              {translatedLine}
-            </p>
-          ) : null}
-          {subtitleMode !== "translation" ? (
-            <p className="mt-2 max-w-3xl text-sm uppercase tracking-[0.26em] text-white/72 md:text-base">
-              {originalLine}
+          <p
+            className="max-w-4xl text-[clamp(1.5rem,3vw,2.75rem)] font-semibold leading-tight tracking-[-0.03em] text-[#f5f1e8]"
+            data-testid="subtitle-primary"
+          >
+            {renderTrackWords(
+              primaryWords,
+              "primary",
+              primaryTrack === "original" ? "Original subtitles" : "Translated subtitles will appear here",
+              primaryTiktokMode
+            )}
+          </p>
+          {secondaryTrack !== "off" ? (
+            <p
+              className="mt-2 max-w-3xl text-sm uppercase tracking-[0.26em] text-white/72 md:text-base"
+              data-testid="subtitle-secondary"
+            >
+              {renderTrackWords(
+                secondaryWords,
+                "secondary",
+                secondaryTrack === "original" ? "Original subtitles" : "Translated subtitles will appear here",
+                secondaryTiktokMode
+              )}
             </p>
           ) : null}
         </div>
@@ -332,7 +418,7 @@ export function DubbAIPlayer({
         >
           <div className="bg-gradient-to-t from-black via-black/88 to-transparent px-4 pb-4 pt-10 md:px-6">
             <div className="mb-3 flex items-center justify-between text-xs uppercase tracking-[0.24em] text-fog/70">
-              <span>{cues.length} cues</span>
+              <span>{originalGroups.length} cues</span>
               <span>{formatTimestamp(currentTimeMs)} / {formatTimestamp(durationMs)}</span>
             </div>
 
@@ -392,7 +478,7 @@ export function DubbAIPlayer({
               <button
                 className="rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
                 onClick={() => {
-                  toggleFullscreen();
+                  void toggleBrowserFullscreen();
                   showOverlay();
                 }}
                 type="button"
@@ -416,22 +502,87 @@ export function DubbAIPlayer({
           <div className="grid gap-5 lg:grid-cols-3">
             <section className="space-y-3">
               <p className="text-xs uppercase tracking-[0.28em] text-aqua/80">Subtitles</p>
+              <div className="space-y-2">
+                <p className="text-sm text-fog/75">Primary track</p>
+                <div className="flex flex-wrap gap-2">
+                  {(["translation", "original"] as const).map((track) => (
+                    <button
+                      aria-label={`Primary ${track}`}
+                      className={clsx(
+                        "rounded-full border px-4 py-2 text-sm font-semibold transition",
+                        primaryTrack === track
+                          ? "border-aqua bg-aqua text-ink"
+                          : "border-white/12 bg-white/5 text-fog hover:bg-white/10"
+                      )}
+                      key={`primary-${track}`}
+                      onClick={() => setPrimaryTrack(track)}
+                      type="button"
+                    >
+                      {track === "translation" ? "Translation" : "Original"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm text-fog/75">Secondary track</p>
+                <div className="flex flex-wrap gap-2">
+                  {(["original", "translation", "off"] as const).map((track) => (
+                    <button
+                      aria-label={`Secondary ${track}`}
+                      className={clsx(
+                        "rounded-full border px-4 py-2 text-sm font-semibold transition",
+                        secondaryTrack === track
+                          ? "border-white bg-white text-ink"
+                          : "border-white/12 bg-white/5 text-fog hover:bg-white/10"
+                      )}
+                      key={`secondary-${track}`}
+                      onClick={() => setSecondaryTrack(track)}
+                      type="button"
+                    >
+                      {track === "off"
+                        ? "Off"
+                        : track === "translation"
+                          ? "Translation"
+                          : "Original"}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="flex flex-wrap gap-2">
-                {subtitleModes.map((mode) => (
-                  <button
-                    className={clsx(
-                      "rounded-full border px-4 py-2 text-sm font-semibold transition",
-                      subtitleMode === mode.value
-                        ? "border-aqua bg-aqua text-ink"
-                        : "border-white/12 bg-white/5 text-fog hover:bg-white/10"
-                    )}
-                    key={mode.value}
-                    onClick={() => setSubtitleMode(mode.value)}
-                    type="button"
-                  >
-                    {mode.label}
-                  </button>
-                ))}
+                <button
+                  className="rounded-full border border-white/12 bg-white/5 px-4 py-2 text-sm font-semibold text-fog transition hover:bg-white/10 disabled:opacity-50"
+                  disabled={secondaryTrack === "off"}
+                  onClick={swapTracks}
+                  type="button"
+                >
+                  Swap tracks
+                </button>
+                <button
+                  aria-label="Primary tiktok"
+                  className={clsx(
+                    "rounded-full border px-4 py-2 text-sm font-semibold transition",
+                    primaryTiktokMode
+                      ? "border-aqua bg-aqua text-ink"
+                      : "border-white/12 bg-white/5 text-fog hover:bg-white/10"
+                  )}
+                  onClick={togglePrimaryTiktokMode}
+                  type="button"
+                >
+                  Primary tiktok
+                </button>
+                <button
+                  aria-label="Secondary tiktok"
+                  className={clsx(
+                    "rounded-full border px-4 py-2 text-sm font-semibold transition",
+                    secondaryTiktokMode
+                      ? "border-white bg-white text-ink"
+                      : "border-white/12 bg-white/5 text-fog hover:bg-white/10"
+                  )}
+                  onClick={toggleSecondaryTiktokMode}
+                  type="button"
+                >
+                  Secondary tiktok
+                </button>
               </div>
               <div className="flex flex-wrap gap-2">
                 {densityOptions.map((option) => (

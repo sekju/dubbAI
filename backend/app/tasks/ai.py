@@ -7,29 +7,18 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models.job import PipelineJob
 from app.models.project import Project
-from app.models.transcript import TranscriptSegment
+from app.models.transcript import TranscriptSegment, TranscriptWord
 from app.services.gemini import GeminiClient
 from app.services.media import extract_audio
-from app.services.pipeline import parse_transcript_payload
 
 ACTIVE_STAGE_STATUSES = {"queued", "in_progress"}
+SEGMENT_BREAK_CHARS = {".", "!", "?", ":", ";"}
+SEGMENT_BREAK_GAP_MS = 1200
+SEGMENT_MAX_WORDS = 12
 
 
 class StageConflictError(RuntimeError):
     pass
-
-
-def _fallback_segments(project_name: str) -> list[dict[str, object]]:
-    return [
-        {
-            "speaker": "Speaker A",
-            "start_ms": 0,
-            "end_ms": 2500,
-            "original_text": f"Transcript placeholder for {project_name}",
-            "translated_text": f"Przykladowa transkrypcja dla {project_name}",
-            "words": [],
-        }
-    ]
 
 
 def _resolve_source_path(project: Project) -> Path:
@@ -60,6 +49,24 @@ def _resolve_source_path(project: Project) -> Path:
     return Path(project.source_url)
 
 
+def _validate_word_payload(word: dict[str, object]) -> None:
+    if not isinstance(word.get("position"), int):
+        raise ValueError(f"Unsupported transcript word payload: {word!r}")
+    if not isinstance(word.get("start_ms"), int):
+        raise ValueError(f"Unsupported transcript word payload: {word!r}")
+    if not isinstance(word.get("end_ms"), int):
+        raise ValueError(f"Unsupported transcript word payload: {word!r}")
+    if word["end_ms"] < word["start_ms"]:
+        raise ValueError(f"Unsupported transcript word payload: {word!r}")
+    if not isinstance(word.get("original_text"), str) or not word["original_text"].strip():
+        raise ValueError(f"Unsupported transcript word payload: {word!r}")
+    if not isinstance(word.get("keyword"), bool):
+        raise ValueError(f"Unsupported transcript word payload: {word!r}")
+    translated_text = word.get("translated_text", "")
+    if not isinstance(translated_text, str):
+        raise ValueError(f"Unsupported transcript word payload: {word!r}")
+
+
 def _persist_segments(
     db,
     project: Project,
@@ -68,32 +75,122 @@ def _persist_segments(
     include_translation: bool,
 ) -> None:
     db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).delete()
-    for index, chunk in enumerate(parse_transcript_payload({"segments": segments})):
+    for index, segment in enumerate(segments, start=1):
+        speaker = segment.get("speaker")
+        start_ms = segment.get("start_ms")
+        end_ms = segment.get("end_ms")
+        original_text = segment.get("original_text")
+        translated_text = segment.get("translated_text", "")
+
+        if not isinstance(speaker, str):
+            raise ValueError(f"Unsupported transcript segment payload: {segment!r}")
+        if not isinstance(start_ms, int) or not isinstance(end_ms, int):
+            raise ValueError(f"Unsupported transcript segment payload: {segment!r}")
+        if end_ms < start_ms:
+            raise ValueError(f"Unsupported transcript segment payload: {segment!r}")
+        if not isinstance(original_text, str) or not original_text.strip():
+            raise ValueError(f"Unsupported transcript segment payload: {segment!r}")
+        if not isinstance(translated_text, str):
+            raise ValueError(f"Unsupported transcript segment payload: {segment!r}")
+
         db.add(
             TranscriptSegment(
-                id=f"{project.id}-{index}",
+                id=f"{project.id}-segment-{index}",
                 project_id=project.id,
-                speaker=chunk.speaker,
-                start_ms=chunk.start_ms,
-                end_ms=chunk.end_ms,
-                original_text=chunk.original_text,
-                translated_text=chunk.translated_text if include_translation else "",
+                speaker=speaker,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                original_text=original_text,
+                translated_text=translated_text if include_translation else "",
             )
         )
 
 
-def _ordered_segments(db, project: Project) -> list[TranscriptSegment]:
+def _build_segments_from_words(words: list[dict[str, object]]) -> list[dict[str, object]]:
+    if not words:
+        return []
+
+    segments: list[dict[str, object]] = []
+    current_words: list[dict[str, object]] = []
+
+    def flush_current_words() -> None:
+        if not current_words:
+            return
+
+        translated_parts = [
+            str(word.get("translated_text", "")).strip()
+            for word in current_words
+            if str(word.get("translated_text", "")).strip()
+        ]
+        segments.append(
+            {
+                "speaker": "Speaker A",
+                "start_ms": int(current_words[0]["start_ms"]),
+                "end_ms": int(current_words[-1]["end_ms"]),
+                "original_text": " ".join(str(word["original_text"]) for word in current_words),
+                "translated_text": " ".join(translated_parts),
+            }
+        )
+        current_words.clear()
+
+    previous_end_ms: int | None = None
+    for word in words:
+        current_words.append(word)
+        text = str(word["original_text"]).strip()
+        start_ms = int(word["start_ms"])
+        gap_ms = start_ms - previous_end_ms if previous_end_ms is not None else 0
+        previous_end_ms = int(word["end_ms"])
+
+        if (
+            len(current_words) >= SEGMENT_MAX_WORDS
+            or gap_ms >= SEGMENT_BREAK_GAP_MS
+            or (text and text[-1] in SEGMENT_BREAK_CHARS)
+        ):
+            flush_current_words()
+
+    flush_current_words()
+    return segments
+
+
+def _persist_transcript_words(db, project: Project, words: list[dict[str, object]]) -> None:
+    db.query(TranscriptWord).filter(TranscriptWord.project_id == project.id).delete()
+    for word in words:
+        _validate_word_payload(word)
+        db.add(
+            TranscriptWord(
+                id=f"{project.id}-word-{word['position']}",
+                project_id=project.id,
+                position=word["position"],
+                start_ms=word["start_ms"],
+                end_ms=word["end_ms"],
+                original_text=word["original_text"],
+                translated_text=str(word.get("translated_text", "")),
+                keyword=word["keyword"],
+            )
+        )
+
+
+def _ordered_words(db, project: Project) -> list[TranscriptWord]:
     return (
-        db.query(TranscriptSegment)
-        .filter(TranscriptSegment.project_id == project.id)
-        .order_by(TranscriptSegment.start_ms.asc(), TranscriptSegment.id.asc())
+        db.query(TranscriptWord)
+        .filter(TranscriptWord.project_id == project.id)
+        .order_by(TranscriptWord.position.asc(), TranscriptWord.id.asc())
         .all()
     )
+
+
+def _clear_transcript_output(db, project: Project) -> None:
+    db.query(TranscriptWord).filter(TranscriptWord.project_id == project.id).delete()
+    db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).delete()
 
 
 def _clear_translated_segments(db, project: Project) -> None:
     db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project.id).update(
         {TranscriptSegment.translated_text: ""},
+        synchronize_session=False,
+    )
+    db.query(TranscriptWord).filter(TranscriptWord.project_id == project.id).update(
+        {TranscriptWord.translated_text: ""},
         synchronize_session=False,
     )
 
@@ -114,8 +211,18 @@ def _ensure_translation_job_can_start(project: Project) -> None:
         raise StageConflictError("Cannot start translation while transcription is queued or in progress")
 
 
-def _fallback_translations(segments: list[TranscriptSegment]) -> list[str]:
-    return [segment.original_text for segment in segments]
+def _word_models_to_payload(words: list[TranscriptWord]) -> list[dict[str, object]]:
+    return [
+        {
+            "position": word.position,
+            "start_ms": word.start_ms,
+            "end_ms": word.end_ms,
+            "original_text": word.original_text,
+            "translated_text": word.translated_text,
+            "keyword": word.keyword,
+        }
+        for word in words
+    ]
 
 
 @celery_app.task(name="app.tasks.ai.transcribe_project")
@@ -142,13 +249,14 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
         job.progress = 45
         db.commit()
 
-        try:
-          payload = asyncio.run(GeminiClient().transcribe_translate(audio_path.read_bytes()))
-          segments = payload.get("segments", []) or _fallback_segments(project.name)
-        except Exception:
-          segments = _fallback_segments(project.name)
+        payload = asyncio.run(GeminiClient().transcribe_translate(audio_path.read_bytes()))
+        words = payload.get("words", [])
+        if not words:
+            raise RuntimeError("Gemini returned no transcript words")
 
-        _persist_segments(db, project, segments, include_translation=False)
+        _clear_transcript_output(db, project)
+        _persist_transcript_words(db, project, words)
+        _persist_segments(db, project, _build_segments_from_words(words), include_translation=False)
 
         project.status = "transcribed"
         project.transcript_status = "ready"
@@ -170,6 +278,7 @@ def transcribe_project(job_id: str, project_id: str) -> dict[str, str]:
             job.state = "failure"
             job.progress = 100
         if project:
+            _clear_transcript_output(db, project)
             project.status = "transcription_failed"
             project.transcript_status = "failed"
         db.commit()
@@ -188,46 +297,51 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
             raise ValueError("Project or job not found")
 
         _ensure_translation_job_can_start(project)
-        segments = _ordered_segments(db, project)
-        if not segments:
-            raise StageConflictError("Cannot start translation before transcription segments exist")
+        words = _ordered_words(db, project)
+        if not words:
+            raise StageConflictError("Cannot start translation before transcription words exist")
 
         job.state = "started"
         job.progress = 10
         project.translation_status = "in_progress"
+        _clear_translated_segments(db, project)
         db.commit()
 
         job.progress = 45
         db.commit()
 
-        try:
-          translated_texts = asyncio.run(
-              GeminiClient().translate_segments(
-                  [
-                      {
-                          "speaker": segment.speaker,
-                          "start_ms": segment.start_ms,
-                          "end_ms": segment.end_ms,
-                          "original_text": segment.original_text,
-                      }
-                      for segment in segments
-                  ],
-                  target_language=project.target_language or "pl",
-              )
-          )
-        except Exception:
-          translated_texts = _fallback_translations(segments)
+        translated_texts = asyncio.run(
+            GeminiClient().translate_segments(
+                [
+                    {
+                        "start_ms": word.start_ms,
+                        "end_ms": word.end_ms,
+                        "original_text": word.original_text,
+                    }
+                    for word in words
+                ],
+                target_language=project.target_language or "pl",
+            )
+        )
 
-        if len(translated_texts) != len(segments):
+        if len(translated_texts) != len(words):
             raise ValueError(
                 "Gemini translation response length mismatch: "
-                f"{len(translated_texts)} translations for {len(segments)} segments"
+                f"{len(translated_texts)} translations for {len(words)} words"
             )
 
-        for segment, translated_text in zip(segments, translated_texts, strict=True):
-            segment.translated_text = translated_text
-            db.add(segment)
+        for word, translated_text in zip(words, translated_texts, strict=True):
+            word.translated_text = translated_text
+            db.add(word)
 
+        _persist_segments(
+            db,
+            project,
+            _build_segments_from_words(_word_models_to_payload(words)),
+            include_translation=True,
+        )
+
+        project.status = "translated"
         project.translation_status = "ready"
         job.state = "success"
         job.progress = 100
@@ -240,6 +354,7 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
             job.state = "failure"
             job.progress = 100
         if project:
+            _clear_translated_segments(db, project)
             project.translation_status = "not_started"
         db.commit()
         raise
@@ -250,11 +365,14 @@ def translate_project(job_id: str, project_id: str) -> dict[str, str]:
             job.state = "failure"
             job.progress = 100
         if project:
-            project.translation_status = "not_started"
+            _clear_translated_segments(db, project)
+            project.status = "translation_failed"
+            project.translation_status = "failed"
         db.commit()
         raise
     finally:
         db.close()
+
 
 @celery_app.task(name="app.tasks.ai.generate_dubbing")
 def generate_dubbing(project_id: str) -> dict[str, str]:

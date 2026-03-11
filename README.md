@@ -21,6 +21,8 @@ Production-oriented multi-user SaaS for transcript, translation, diarization and
 5. Open `http://localhost:8000/api/docs`
 6. Open `http://localhost:8025` for activation mails in Mailpit
 
+`/projects/[projectId]` remains only as a compatibility redirect into the new `Library` / `Theater` flow. The primary product entrypoints are `/library` and `/theater/[playlistId]/[projectId]`.
+
 If backend models or database fields change during local development, reset the persisted Postgres volume before restarting the stack:
 
 ```bash

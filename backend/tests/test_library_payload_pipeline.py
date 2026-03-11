@@ -1,4 +1,5 @@
 from app.db.session import SessionLocal
+from app.models.job import PipelineJob
 from app.models.project import Project
 
 
@@ -38,6 +39,7 @@ def test_library_payload_includes_languages_and_stage_statuses(client) -> None:
             "dubbing_status": "not_started",
             "next_action": "open_theater",
             "folder_id": None,
+            "active_job": None,
         }
     ]
 
@@ -105,3 +107,57 @@ def test_library_payload_derives_next_action_from_pipeline_state(client) -> None
         "project-open-theater": "open_theater",
         "project-retry": "retry",
     }
+
+
+def test_library_payload_includes_active_job_for_processing_project(client) -> None:
+    with SessionLocal() as db:
+        db.add(
+            Project(
+                id="project-library-active-job",
+                owner_id="local-dev",
+                name="Processing now",
+                source_type="upload",
+                source_url="/storage/uploads/processing-now.mp4",
+                status="transcription_queued",
+                transcript_status="queued",
+                translation_status="not_started",
+                dubbing_status="not_started",
+            )
+        )
+        db.add(
+            PipelineJob(
+                id="job-library-active",
+                project_id="project-library-active-job",
+                state="started",
+                progress=62,
+                queue="app.tasks.ai.transcribe_project",
+            )
+        )
+        db.commit()
+
+    response = client.get("/api/library")
+
+    assert response.status_code == 200
+    assert response.json()["projects"] == [
+        {
+            "id": "project-library-active-job",
+            "name": "Processing now",
+            "status": "transcription_queued",
+            "source_type": "upload",
+            "source_url": "/storage/uploads/processing-now.mp4",
+            "source_language": None,
+            "target_language": None,
+            "transcript_status": "queued",
+            "translation_status": "not_started",
+            "dubbing_status": "not_started",
+            "next_action": "open_theater",
+            "folder_id": None,
+            "active_job": {
+                "job_id": "job-library-active",
+                "project_id": "project-library-active-job",
+                "state": "started",
+                "progress": 62,
+                "queue": "app.tasks.ai.transcribe_project",
+            },
+        }
+    ]

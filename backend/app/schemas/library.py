@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from app.schemas.job import JobStatusResponse
+
 
 class FolderCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
@@ -34,6 +36,7 @@ class LibraryProjectResponse(BaseModel):
     dubbing_status: str = "not_started"
     next_action: str
     folder_id: str | None = None
+    active_job: JobStatusResponse | None = None
 
 
 class FolderResponse(BaseModel):

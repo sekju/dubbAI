@@ -2,9 +2,12 @@ import type {
   JobStatus,
   LibraryData,
   LibraryFolder,
+  LibraryProjectNextAction,
   LibraryPlaylist,
   LibraryProjectSummary,
+  PipelineStageStatus,
   ProjectSummary,
+  ProjectIntakeLanguages,
   TheaterQueue,
   TranscriptCue,
 } from "@/lib/types";
@@ -25,6 +28,12 @@ type ApiProject = {
   status: string;
   source_type: "upload" | "url";
   source_url: string | null;
+  source_language?: string | null;
+  target_language?: string | null;
+  transcript_status?: string;
+  translation_status?: string;
+  dubbing_status?: string;
+  active_job?: ApiJobStatus | null;
   transcript_segments: Array<{
     speaker: string;
     start_ms: number;
@@ -32,6 +41,14 @@ type ApiProject = {
     original_text: string;
     translated_text: string;
     words: Array<{ text: string; start_ms: number; end_ms: number }>;
+  }>;
+  transcript_words: Array<{
+    position: number;
+    start_ms: number;
+    end_ms: number;
+    original_text: string;
+    translated_text: string;
+    keyword: boolean;
   }>;
 };
 
@@ -50,6 +67,13 @@ type ApiLibraryProject = {
   source_type: "upload" | "url";
   source_url: string | null;
   folder_id: string | null;
+  source_language?: string | null;
+  target_language?: string | null;
+  transcript_status?: string;
+  translation_status?: string;
+  dubbing_status?: string;
+  next_action?: LibraryProjectNextAction;
+  active_job?: ApiJobStatus | null;
 };
 
 type ApiFolder = {
@@ -99,6 +123,18 @@ function toCue(segment: ApiProject["transcript_segments"][number], index: number
   };
 }
 
+function toStageStatus(status?: string | null): PipelineStageStatus | undefined {
+  if (!status) {
+    return undefined;
+  }
+
+  if (status === "not_started" || status === "queued" || status === "in_progress" || status === "ready" || status === "failed") {
+    return status;
+  }
+
+  return undefined;
+}
+
 function toProjectSummary(project: ApiProject): ProjectSummary {
   return {
     id: project.id,
@@ -106,7 +142,21 @@ function toProjectSummary(project: ApiProject): ProjectSummary {
     status: project.status,
     sourceType: project.source_type,
     sourceUrl: project.source_url,
-    transcriptSegments: project.transcript_segments.map(toCue)
+    sourceLanguage: project.source_language,
+    targetLanguage: project.target_language,
+    transcriptStatus: toStageStatus(project.transcript_status),
+    translationStatus: toStageStatus(project.translation_status),
+    dubbingStatus: toStageStatus(project.dubbing_status),
+    activeJob: project.active_job ? toJobStatus(project.active_job) : null,
+    transcriptSegments: project.transcript_segments.map(toCue),
+    transcriptWords: project.transcript_words.map((word) => ({
+      position: word.position,
+      startMs: word.start_ms,
+      endMs: word.end_ms,
+      originalText: word.original_text,
+      translatedText: word.translated_text,
+      keyword: word.keyword
+    }))
   };
 }
 
@@ -118,6 +168,13 @@ function toLibraryProjectSummary(project: ApiLibraryProject): LibraryProjectSumm
     sourceType: project.source_type,
     sourceUrl: project.source_url,
     folderId: project.folder_id,
+    sourceLanguage: project.source_language,
+    targetLanguage: project.target_language,
+    transcriptStatus: toStageStatus(project.transcript_status),
+    translationStatus: toStageStatus(project.translation_status),
+    dubbingStatus: toStageStatus(project.dubbing_status),
+    nextAction: project.next_action,
+    activeJob: project.active_job ? toJobStatus(project.active_job) : null,
   };
 }
 
@@ -206,10 +263,20 @@ export async function fetchPlaylistQueue(playlistId: string): Promise<TheaterQue
   };
 }
 
-export async function createProjectFromUpload(name: string, file: File): Promise<JobStatus> {
+export async function createProjectFromUpload(
+  name: string,
+  file: File,
+  options?: ProjectIntakeLanguages,
+): Promise<JobStatus> {
   const formData = new FormData();
   formData.set("name", name);
   formData.set("file", file);
+  if (options?.sourceLanguage) {
+    formData.set("source_language", options.sourceLanguage);
+  }
+  if (options?.targetLanguage) {
+    formData.set("target_language", options.targetLanguage);
+  }
 
   const response = await fetch(`${getApiBaseUrl()}/api/projects/upload`, {
     method: "POST",
@@ -223,13 +290,22 @@ export async function createProjectFromUpload(name: string, file: File): Promise
   return toJobStatus((await response.json()) as ApiJobStatus);
 }
 
-export async function createProjectFromUrl(name: string, sourceUrl: string): Promise<JobStatus> {
+export async function createProjectFromUrl(
+  name: string,
+  sourceUrl: string,
+  options?: ProjectIntakeLanguages,
+): Promise<JobStatus> {
   const response = await fetch(`${getApiBaseUrl()}/api/projects/import`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ name, source_url: sourceUrl })
+    body: JSON.stringify({
+      name,
+      source_url: sourceUrl,
+      source_language: options?.sourceLanguage ?? null,
+      target_language: options?.targetLanguage ?? null
+    })
   });
 
   if (!response.ok) {
@@ -358,6 +434,18 @@ export async function startProjectTranscription(projectId: string): Promise<JobS
 
   if (!response.ok) {
     throw new Error("Failed to start transcription");
+  }
+
+  return toJobStatus((await response.json()) as ApiJobStatus);
+}
+
+export async function startProjectTranslation(projectId: string): Promise<JobStatus> {
+  const response = await fetch(`${getApiBaseUrl()}/api/projects/${projectId}/translate`, {
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to start translation");
   }
 
   return toJobStatus((await response.json()) as ApiJobStatus);

@@ -10,7 +10,7 @@ from app.api.router import api_router
 from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import engine
-from app.models import PipelineJob, Project, TranscriptSegment, User
+from app.models import PipelineJob, Project, TranscriptSegment, TranscriptWord, User
 
 settings = get_settings()
 
@@ -66,10 +66,22 @@ def ensure_project_schema(db_engine: Engine) -> None:
         )
 
 
+def ensure_transcript_word_schema(db_engine: Engine) -> None:
+    inspector = inspect(db_engine)
+    if not inspector.has_table("projects"):
+        return
+
+    if inspector.has_table("transcript_words"):
+        return
+
+    TranscriptWord.__table__.create(bind=db_engine)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_project_schema(engine)
+    ensure_transcript_word_schema(engine)
     yield
 
 

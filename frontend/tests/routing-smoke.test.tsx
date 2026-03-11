@@ -1,13 +1,18 @@
 import React from "react";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 import HomePage from "@/app/page";
 import ProjectCompatibilityPage from "@/app/projects/[projectId]/page";
+import TheaterProjectPage from "@/app/theater/[playlistId]/[projectId]/page";
 import { LibraryShell } from "@/components/library/library-shell";
 import { useLibraryStore } from "@/store/use-library-store";
 
 const redirect = vi.fn();
 const fetchLibrary = vi.fn();
+const fetchPlaylistQueue = vi.fn();
+const fetchProject = vi.fn();
 
 vi.mock("next/navigation", () => ({
   redirect: (...args: unknown[]) => redirect(...args)
@@ -18,7 +23,9 @@ vi.mock("@/lib/api", async () => {
 
   return {
     ...actual,
-    fetchLibrary: (...args: unknown[]) => fetchLibrary(...args)
+    fetchLibrary: (...args: unknown[]) => fetchLibrary(...args),
+    fetchPlaylistQueue: (...args: unknown[]) => fetchPlaylistQueue(...args),
+    fetchProject: (...args: unknown[]) => fetchProject(...args)
   };
 });
 
@@ -26,6 +33,8 @@ describe("routing smoke", () => {
   beforeEach(() => {
     redirect.mockReset();
     fetchLibrary.mockReset();
+    fetchPlaylistQueue.mockReset();
+    fetchProject.mockReset();
     useLibraryStore.setState({
       folders: [],
       playlists: [],
@@ -54,20 +63,23 @@ describe("routing smoke", () => {
             {
               id: "project-1",
               name: "Freepik 03",
-              status: "transcribed",
+              status: "translation_queued",
               sourceType: "upload",
               sourceUrl: "/storage/uploads/project-1/video.mp4",
-              folderId: null
+              folderId: null,
+              sourceLanguage: "en",
+              targetLanguage: "pl",
+              transcriptStatus: "ready",
+              translationStatus: "queued",
+              dubbingStatus: "not_started",
+              nextAction: "open_theater"
             }
           ]
         }}
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /weekend set/i }));
-    fireEvent.click(screen.getByRole("button", { name: /select freepik 03/i }));
-
-    expect(screen.getByRole("link", { name: /open in theater/i })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /open theater/i })).toHaveAttribute(
       "href",
       "/theater/playlist-1/project-1"
     );
@@ -85,5 +97,26 @@ describe("routing smoke", () => {
     });
 
     expect(redirect).toHaveBeenCalledWith("/theater/playlist-2/project-9");
+  });
+
+  it("redirects an invalid theater project id to the first item in the playlist queue", async () => {
+    fetchPlaylistQueue.mockResolvedValue({
+      playlistId: "playlist-8",
+      playlistName: "Review",
+      items: [{ projectId: "project-4", title: "Valid entry" }]
+    });
+
+    await TheaterProjectPage({
+      params: Promise.resolve({ playlistId: "playlist-8", projectId: "project-missing" })
+    });
+
+    expect(redirect).toHaveBeenCalledWith("/theater/playlist-8/project-4");
+    expect(fetchProject).not.toHaveBeenCalled();
+  });
+
+  it("does not keep the legacy project workspace component in the product flow", () => {
+    expect(
+      existsSync(path.join(process.cwd(), "components", "projects", "project-workspace.tsx"))
+    ).toBe(false);
   });
 });

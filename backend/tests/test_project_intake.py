@@ -6,8 +6,14 @@ import pytest
 from app.db.session import SessionLocal
 from app.models.job import PipelineJob
 from app.models.project import Project
-from app.models.transcript import TranscriptSegment
+from app.models.transcript import TranscriptSegment, TranscriptWord
 from app.tasks.ai import transcribe_project
+
+
+def _tmp_media_path(filename: str) -> Path:
+    path = Path(__file__).resolve().parents[2] / "storage" / "test-suite" / "tmp-media" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _expected_project_payload(
@@ -30,7 +36,9 @@ def _expected_project_payload(
         "transcript_status": transcript_status,
         "translation_status": "not_started",
         "dubbing_status": "not_started",
+        "active_job": None,
         "transcript_segments": [],
+        "transcript_words": [],
     }
 
 
@@ -115,8 +123,8 @@ def test_transcribe_endpoint_creates_ai_job_and_dispatches_task(client, monkeypa
     assert detail.json()["transcript_status"] == "queued"
 
 
-def test_transcribe_task_sets_transcript_status_in_progress_and_ready(tmp_path, monkeypatch) -> None:
-    source_path = tmp_path / "source.mp4"
+def test_transcribe_task_sets_transcript_status_in_progress_and_ready(monkeypatch) -> None:
+    source_path = _tmp_media_path("project-transcribe-success.mp4")
     source_path.write_bytes(b"video")
     observed_statuses: list[tuple[str, str]] = []
 
@@ -153,14 +161,20 @@ def test_transcribe_task_sets_transcript_status_in_progress_and_ready(tmp_path, 
         async def transcribe_translate(self, audio_bytes: bytes) -> dict[str, object]:
             assert audio_bytes == b"audio"
             return {
-                "segments": [
+                "words": [
                     {
-                        "speaker": "Speaker A",
+                        "position": 1,
                         "start_ms": 0,
-                        "end_ms": 1000,
+                        "end_ms": 450,
                         "original_text": "Hello",
-                        "translated_text": "Czesc",
-                        "words": [],
+                        "keyword": False,
+                    },
+                    {
+                        "position": 2,
+                        "start_ms": 451,
+                        "end_ms": 1000,
+                        "original_text": "world.",
+                        "keyword": True,
                     }
                 ]
             }
@@ -177,17 +191,24 @@ def test_transcribe_task_sets_transcript_status_in_progress_and_ready(tmp_path, 
         saved_project = db.get(Project, "project-transcribe-success")
         saved_job = db.get(PipelineJob, "job-transcribe-success")
         saved_segments = db.query(TranscriptSegment).filter_by(project_id="project-transcribe-success").all()
+        saved_words = (
+            db.query(TranscriptWord)
+            .filter_by(project_id="project-transcribe-success")
+            .order_by(TranscriptWord.position.asc())
+            .all()
+        )
 
         assert saved_project is not None
         assert saved_project.status == "transcribed"
         assert saved_project.transcript_status == "ready"
         assert saved_job is not None
         assert saved_job.state == "success"
+        assert [word.original_text for word in saved_words] == ["Hello", "world."]
         assert saved_segments
 
 
-def test_transcribe_task_sets_transcript_status_failed_on_error(tmp_path, monkeypatch) -> None:
-    source_path = tmp_path / "broken-source.mp4"
+def test_transcribe_task_sets_transcript_status_failed_on_error(monkeypatch) -> None:
+    source_path = _tmp_media_path("project-transcribe-failure.mp4")
     source_path.write_bytes(b"video")
     observed_statuses: list[tuple[str, str]] = []
 
@@ -234,3 +255,58 @@ def test_transcribe_task_sets_transcript_status_failed_on_error(tmp_path, monkey
         assert saved_project.transcript_status == "failed"
         assert saved_job is not None
         assert saved_job.state == "failure"
+
+
+def test_transcribe_task_fails_when_gemini_returns_no_segments(monkeypatch) -> None:
+    source_path = _tmp_media_path("project-transcribe-empty.mp4")
+    source_path.write_bytes(b"video")
+
+    with SessionLocal() as db:
+        project = Project(
+            id="project-transcribe-empty-gemini",
+            owner_id="local-dev",
+            name="Empty Gemini transcript",
+            source_type="upload",
+            source_url=str(source_path),
+            status="transcription_queued",
+            transcript_status="queued",
+        )
+        job = PipelineJob(
+            id="job-transcribe-empty-gemini",
+            project_id=project.id,
+            state="queued",
+            progress=0,
+            queue="app.tasks.ai.transcribe_project",
+        )
+        db.add_all([project, job])
+        db.commit()
+
+    def fake_extract_audio(source: Path, audio_path: Path) -> None:
+        assert source == source_path
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"audio")
+
+    class FakeGeminiClient:
+        async def transcribe_translate(self, audio_bytes: bytes) -> dict[str, object]:
+            assert audio_bytes == b"audio"
+            return {"words": []}
+
+    monkeypatch.setattr("app.tasks.ai.extract_audio", fake_extract_audio)
+    monkeypatch.setattr("app.tasks.ai.GeminiClient", FakeGeminiClient)
+
+    with pytest.raises(RuntimeError, match="returned no transcript words"):
+        transcribe_project("job-transcribe-empty-gemini", "project-transcribe-empty-gemini")
+
+    with SessionLocal() as db:
+        saved_project = db.get(Project, "project-transcribe-empty-gemini")
+        saved_job = db.get(PipelineJob, "job-transcribe-empty-gemini")
+        saved_segments = db.query(TranscriptSegment).filter_by(project_id="project-transcribe-empty-gemini").all()
+        saved_words = db.query(TranscriptWord).filter_by(project_id="project-transcribe-empty-gemini").all()
+
+        assert saved_project is not None
+        assert saved_project.status == "transcription_failed"
+        assert saved_project.transcript_status == "failed"
+        assert saved_job is not None
+        assert saved_job.state == "failure"
+        assert saved_segments == []
+        assert saved_words == []

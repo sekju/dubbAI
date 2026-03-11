@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { LibraryShell } from "@/components/library/library-shell";
@@ -13,6 +13,8 @@ const removeProject = vi.fn();
 const createProjectFromUpload = vi.fn();
 const createProjectFromUrl = vi.fn();
 const fetchLibrary = vi.fn();
+const startProjectTranscription = vi.fn();
+const startProjectTranslation = vi.fn();
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -26,7 +28,9 @@ vi.mock("@/lib/api", async () => {
     deleteProject: (...args: unknown[]) => removeProject(...args),
     createProjectFromUpload: (...args: unknown[]) => createProjectFromUpload(...args),
     createProjectFromUrl: (...args: unknown[]) => createProjectFromUrl(...args),
-    fetchLibrary: (...args: unknown[]) => fetchLibrary(...args)
+    fetchLibrary: (...args: unknown[]) => fetchLibrary(...args),
+    startProjectTranscription: (...args: unknown[]) => startProjectTranscription(...args),
+    startProjectTranslation: (...args: unknown[]) => startProjectTranslation(...args)
   };
 });
 
@@ -37,10 +41,30 @@ const sampleLibrary = {
     {
       id: "project-1",
       name: "Freepik 03",
-      status: "transcribed",
+      status: "uploaded",
       sourceType: "upload" as const,
       sourceUrl: "/storage/uploads/project-1/video.mp4",
-      folderId: "folder-1"
+      folderId: "folder-1",
+      sourceLanguage: "en",
+      targetLanguage: "pl",
+      transcriptStatus: "not_started",
+      translationStatus: "not_started",
+      dubbingStatus: "not_started",
+      nextAction: "transcribe" as const
+    },
+    {
+      id: "project-2",
+      name: "German clip",
+      status: "transcribed",
+      sourceType: "url" as const,
+      sourceUrl: "https://example.com/german",
+      folderId: null,
+      sourceLanguage: "de",
+      targetLanguage: "fr",
+      transcriptStatus: "ready",
+      translationStatus: "failed",
+      dubbingStatus: "not_started",
+      nextAction: "retry" as const
     }
   ]
 };
@@ -66,6 +90,8 @@ describe("Library actions", () => {
     createProjectFromUpload.mockReset();
     createProjectFromUrl.mockReset();
     fetchLibrary.mockReset();
+    startProjectTranscription.mockReset();
+    startProjectTranslation.mockReset();
 
     vi.spyOn(window, "prompt")
       .mockReturnValueOnce("Review Bin")
@@ -77,7 +103,9 @@ describe("Library actions", () => {
     vi.restoreAllMocks();
   });
 
-  it("creates collections, moves a project, adds it to a playlist, deletes it, and exposes a Theater CTA", async () => {
+  it("uses explicit folder and playlist targets while keeping task actions independent of collection selection", async () => {
+    const user = userEvent.setup();
+
     createFolder.mockResolvedValue({ id: "folder-2", name: "Review Bin", projectIds: [] });
     createPlaylist.mockResolvedValue({ id: "playlist-2", name: "Weekend Set", items: [] });
     assignProjectToFolder.mockResolvedValue({
@@ -89,50 +117,140 @@ describe("Library actions", () => {
       name: "Weekend Set",
       items: [{ projectId: "project-1", position: 1 }]
     });
+    startProjectTranscription.mockResolvedValue({
+      jobId: "job-transcribe",
+      projectId: "project-1",
+      state: "queued",
+      progress: 0,
+      queue: "transcribe"
+    });
+    startProjectTranslation.mockResolvedValue({
+      jobId: "job-translate",
+      projectId: "project-2",
+      state: "queued",
+      progress: 0,
+      queue: "translate"
+    });
+    fetchLibrary
+      .mockResolvedValueOnce({
+        ...sampleLibrary,
+        projects: sampleLibrary.projects.map((project) =>
+          project.id === "project-1"
+            ? {
+                ...project,
+                status: "transcription_queued",
+                transcriptStatus: "queued",
+                nextAction: "open_theater" as const
+              }
+            : project
+        )
+      })
+      .mockResolvedValueOnce({
+        ...sampleLibrary,
+        projects: sampleLibrary.projects.map((project) =>
+          project.id === "project-2"
+            ? {
+                ...project,
+                status: "translation_queued",
+                translationStatus: "queued",
+                nextAction: "open_theater" as const
+              }
+            : project
+        )
+      });
     removeProject.mockResolvedValue(undefined);
 
     render(<LibraryShell initialData={sampleLibrary} />);
 
     fireEvent.click(screen.getByRole("button", { name: /new folder/i }));
-    await screen.findByRole("button", { name: /review bin/i });
+    await screen.findByText("Review Bin");
     expect(createFolder).toHaveBeenCalledWith("Review Bin");
 
     fireEvent.click(screen.getByRole("button", { name: /new playlist/i }));
-    await screen.findByRole("button", { name: /weekend set/i });
+    await screen.findByText("Weekend Set");
     expect(createPlaylist).toHaveBeenCalledWith("Weekend Set");
 
-    fireEvent.click(screen.getByRole("button", { name: /select freepik 03/i }));
-    fireEvent.click(screen.getByRole("button", { name: /review bin/i }));
-    fireEvent.click(screen.getByRole("button", { name: /move to active folder/i }));
+    const freepikCard = screen.getByRole("article", { name: /freepik 03/i });
+    await user.click(within(freepikCard).getByRole("button", { name: /transcribe/i }));
+    await waitFor(() => expect(startProjectTranscription).toHaveBeenCalledWith("project-1"));
+
+    const germanCard = screen.getByRole("article", { name: /german clip/i });
+    await user.click(within(germanCard).getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(startProjectTranslation).toHaveBeenCalledWith("project-2"));
+
+    await user.click(within(freepikCard).getByRole("button", { name: /organize freepik 03/i }));
+    expect(screen.getByLabelText(/folder target/i)).toHaveValue("");
+    expect(screen.getByLabelText(/playlist target/i)).toHaveValue("");
+    expect(screen.getByRole("button", { name: /move to folder/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /add to playlist/i })).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText(/folder target/i), "folder-2");
+    await user.click(screen.getByRole("button", { name: /move to folder/i }));
     await waitFor(() => expect(assignProjectToFolder).toHaveBeenCalledWith("project-1", "folder-2"));
 
-    fireEvent.click(screen.getByRole("button", { name: /weekend set/i }));
-    fireEvent.click(screen.getByRole("button", { name: /add to active playlist/i }));
+    await user.selectOptions(screen.getByLabelText(/playlist target/i), "playlist-2");
+    await user.click(screen.getByRole("button", { name: /add to playlist/i }));
     await waitFor(() => expect(addProjectToPlaylist).toHaveBeenCalledWith("playlist-2", "project-1"));
-
-    expect(screen.getByRole("link", { name: /open in theater/i })).toHaveAttribute(
-      "href",
-      "/theater/playlist-2/project-1"
-    );
 
     fireEvent.click(screen.getByRole("button", { name: /delete project/i }));
     await waitFor(() => expect(removeProject).toHaveBeenCalledWith("project-1"));
     expect(screen.queryByText("Freepik 03")).not.toBeInTheDocument();
   });
 
-  it("lets the user add projects from upload and URL inside the library view", async () => {
+  it("blocks duplicate pipeline requests while an action is still in flight", async () => {
+    const user = userEvent.setup();
+
+    let resolveTranscription: ((value: {
+      jobId: string;
+      projectId: string;
+      state: "queued";
+      progress: number;
+      queue: string;
+    }) => void) | null = null;
+
+    startProjectTranscription.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveTranscription = resolve;
+        })
+    );
+
+    render(<LibraryShell initialData={sampleLibrary} />);
+
+    const freepikCard = screen.getByRole("article", { name: /freepik 03/i });
+    const transcribeButton = within(freepikCard).getByRole("button", { name: /transcribe/i });
+
+    await user.click(transcribeButton);
+    await user.click(transcribeButton);
+
+    expect(startProjectTranscription).toHaveBeenCalledTimes(1);
+
+    resolveTranscription?.({
+      jobId: "job-transcribe",
+      projectId: "project-1",
+      state: "queued",
+      progress: 0,
+      queue: "transcribe"
+    });
+
+    await waitFor(() =>
+      expect(within(screen.getByRole("article", { name: /freepik 03/i })).getByRole("button", { name: /organize freepik 03/i }))
+        .toBeInTheDocument()
+    );
+  });
+
+  it("submits upload and url intake with language selections from the library header", async () => {
     const user = userEvent.setup();
 
     createProjectFromUpload.mockResolvedValue({
       jobId: "job-upload",
-      projectId: "project-2",
+      projectId: "project-3",
       state: "queued",
       progress: 0,
       queue: "ingest"
     });
     createProjectFromUrl.mockResolvedValue({
       jobId: "job-url",
-      projectId: "project-3",
+      projectId: "project-4",
       state: "queued",
       progress: 0,
       queue: "ingest"
@@ -143,12 +261,18 @@ describe("Library actions", () => {
         projects: [
           ...sampleLibrary.projects,
           {
-            id: "project-2",
+            id: "project-3",
             name: "Upload clip",
             status: "queued",
             sourceType: "upload" as const,
-            sourceUrl: "/storage/uploads/project-2/video.mp4",
-            folderId: null
+            sourceUrl: "/storage/uploads/project-3/video.mp4",
+            folderId: null,
+            sourceLanguage: "en",
+            targetLanguage: "pl",
+            transcriptStatus: "queued",
+            translationStatus: "not_started",
+            dubbingStatus: "not_started",
+            nextAction: "open_theater" as const
           }
         ]
       })
@@ -157,27 +281,40 @@ describe("Library actions", () => {
         projects: [
           ...sampleLibrary.projects,
           {
-            id: "project-2",
+            id: "project-3",
             name: "Upload clip",
             status: "queued",
             sourceType: "upload" as const,
-            sourceUrl: "/storage/uploads/project-2/video.mp4",
-            folderId: null
+            sourceUrl: "/storage/uploads/project-3/video.mp4",
+            folderId: null,
+            sourceLanguage: "en",
+            targetLanguage: "pl",
+            transcriptStatus: "queued",
+            translationStatus: "not_started",
+            dubbingStatus: "not_started",
+            nextAction: "open_theater" as const
           },
           {
-            id: "project-3",
+            id: "project-4",
             name: "Remote clip",
             status: "queued",
             sourceType: "url" as const,
             sourceUrl: "https://youtube.com/watch?v=abc",
-            folderId: null
+            folderId: null,
+            sourceLanguage: "pl",
+            targetLanguage: "en",
+            transcriptStatus: "queued",
+            translationStatus: "not_started",
+            dubbingStatus: "not_started",
+            nextAction: "open_theater" as const
           }
         ]
       });
 
     render(<LibraryShell initialData={sampleLibrary} />);
 
-    expect(screen.getByRole("button", { name: /add upload to library/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/source language/i)).toHaveValue("en");
+    expect(screen.getByLabelText(/target language/i)).toHaveValue("pl");
 
     await user.type(screen.getByLabelText(/project name/i), "Upload clip");
     await user.upload(
@@ -186,17 +323,30 @@ describe("Library actions", () => {
     );
     await user.click(screen.getByRole("button", { name: /add upload to library/i }));
 
-    await waitFor(() => expect(createProjectFromUpload).toHaveBeenCalledWith("Upload clip", expect.any(File)));
-    expect(await screen.findByRole("button", { name: /select upload clip/i })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(createProjectFromUpload).toHaveBeenCalledWith(
+        "Upload clip",
+        expect.any(File),
+        expect.objectContaining({ sourceLanguage: "en", targetLanguage: "pl" })
+      )
+    );
+    expect(await screen.findByRole("article", { name: /upload clip/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /remote ingest/i }));
+    await user.clear(screen.getByLabelText(/project name/i));
+    await user.selectOptions(screen.getByLabelText(/source language/i), "pl");
+    expect(screen.getByLabelText(/target language/i)).toHaveValue("en");
     await user.type(screen.getByLabelText(/project name/i), "Remote clip");
     await user.type(screen.getByLabelText(/video url/i), "https://youtube.com/watch?v=abc");
     await user.click(screen.getByRole("button", { name: /import link to library/i }));
 
     await waitFor(() =>
-      expect(createProjectFromUrl).toHaveBeenCalledWith("Remote clip", "https://youtube.com/watch?v=abc")
+      expect(createProjectFromUrl).toHaveBeenCalledWith(
+        "Remote clip",
+        "https://youtube.com/watch?v=abc",
+        expect.objectContaining({ sourceLanguage: "pl", targetLanguage: "en" })
+      )
     );
-    expect(await screen.findByRole("button", { name: /select remote clip/i })).toBeInTheDocument();
+    expect(await screen.findByRole("article", { name: /remote clip/i })).toBeInTheDocument();
   });
 });

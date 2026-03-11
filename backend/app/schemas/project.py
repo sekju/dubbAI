@@ -2,7 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.transcript import TranscriptChunk
+from app.schemas.job import JobStatusResponse
+from app.schemas.transcript import TranscriptChunk, TranscriptWordPayload
 
 
 class ProjectCreateRequest(BaseModel):
@@ -24,7 +25,9 @@ class ProjectResponse(BaseModel):
     transcript_status: str = "not_started"
     translation_status: str = "not_started"
     dubbing_status: str = "not_started"
+    active_job: JobStatusResponse | None = None
     transcript_segments: list[TranscriptChunk] = Field(default_factory=list)
+    transcript_words: list[TranscriptWordPayload] = Field(default_factory=list)
 
 
 class ProjectImportRequest(BaseModel):

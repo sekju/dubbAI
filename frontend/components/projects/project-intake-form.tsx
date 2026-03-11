@@ -3,9 +3,15 @@
 import clsx from "clsx";
 import React, { useState } from "react";
 
+import type { ProjectIntakeLanguages } from "@/lib/types";
+
 type ProjectIntakeFormProps = {
-  onUploadFile: (name: string, file: File) => Promise<void>;
-  onImportUrl: (name: string, sourceUrl: string) => Promise<void>;
+  onUploadFile: (name: string, file: File, options?: ProjectIntakeLanguages) => Promise<void>;
+  onImportUrl: (
+    name: string,
+    sourceUrl: string,
+    options?: ProjectIntakeLanguages,
+  ) => Promise<void>;
 };
 
 const modeCopy = {
@@ -23,44 +29,81 @@ const modeCopy = {
   }
 } as const;
 
+const languageOptions = [
+  { value: "en", label: "English" },
+  { value: "pl", label: "Polish" },
+  { value: "de", label: "German" },
+  { value: "fr", label: "French" },
+  { value: "es", label: "Spanish" },
+  { value: "it", label: "Italian" },
+  { value: "ja", label: "Japanese" }
+] as const;
+
+function getDefaultTargetLanguage(sourceLanguage: string): string {
+  if (sourceLanguage === "en") {
+    return "pl";
+  }
+
+  if (sourceLanguage === "pl") {
+    return "en";
+  }
+
+  return "";
+}
+
 export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFormProps) {
   const [mode, setMode] = useState<"upload" | "url">("upload");
   const [name, setName] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [sourceLanguage, setSourceLanguage] = useState("en");
+  const [targetLanguage, setTargetLanguage] = useState("pl");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSubmitting(true);
+
+    const options: ProjectIntakeLanguages = {
+      sourceLanguage: sourceLanguage || null,
+      targetLanguage: targetLanguage || null
+    };
+
     try {
       if (mode === "upload" && selectedFile) {
-        await onUploadFile(name, selectedFile);
+        await onUploadFile(name, selectedFile, options);
         setSelectedFile(null);
       }
+
       if (mode === "url") {
-        await onImportUrl(name, sourceUrl);
+        await onImportUrl(name, sourceUrl, options);
         setSourceUrl("");
       }
+
       setName("");
     } finally {
       setIsSubmitting(false);
     }
   }
 
+  function handleSourceLanguageChange(nextSourceLanguage: string) {
+    setSourceLanguage(nextSourceLanguage);
+    setTargetLanguage(getDefaultTargetLanguage(nextSourceLanguage));
+  }
+
   return (
     <section className="overflow-hidden rounded-[2rem] border border-black/10 bg-white/80 shadow-panel backdrop-blur">
-      <div className="grid gap-0 lg:grid-cols-[1.1fr_0.9fr]">
+      <div className="grid gap-0 lg:grid-cols-[1.05fr_0.95fr]">
         <div className="space-y-6 bg-ink px-6 py-7 text-white lg:px-8">
           <div className="space-y-3">
             <p className="text-xs uppercase tracking-[0.3em] text-aqua">New project</p>
             <div className="space-y-2">
               <h2 className="font-[family-name:var(--font-display)] text-3xl font-bold leading-tight text-sand">
-                Start a dubbing job without touching the backend.
+                New Project
               </h2>
               <p className="max-w-xl text-sm leading-6 text-fog/80">
-                Create a library-ready project, then jump straight into transcript, translation,
-                dubbing, and export once the pipeline finishes.
+                Start from a source file or URL, lock the language pair up front, then move
+                straight into transcript, translation, and Theater review.
               </p>
             </div>
           </div>
@@ -89,16 +132,16 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
 
           <div className="grid gap-3 text-sm text-fog/75 sm:grid-cols-3">
             <div className="rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-3">
-              <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Formats</p>
-              <p className="mt-2 font-medium text-white">MP4, MOV, MKV, WEBM</p>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Defaults</p>
+              <p className="mt-2 font-medium text-white">EN to PL, PL to EN</p>
             </div>
             <div className="rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-3">
               <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Pipeline</p>
-              <p className="mt-2 font-medium text-white">Transcript, translate, dub</p>
+              <p className="mt-2 font-medium text-white">Transcribe, translate, review</p>
             </div>
             <div className="rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-3">
-              <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Ready for</p>
-              <p className="mt-2 font-medium text-white">Desktop review and export</p>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Flow</p>
+              <p className="mt-2 font-medium text-white">Source first, organization second</p>
             </div>
           </div>
         </div>
@@ -106,11 +149,11 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
         <div className="bg-white px-6 py-7 lg:px-8">
           <form className="grid gap-5" noValidate onSubmit={handleSubmit}>
             <div className="space-y-1">
-              <p className="text-xs uppercase tracking-[0.26em] text-ember">Project details</p>
+              <p className="text-xs uppercase tracking-[0.26em] text-ember">Intake</p>
               <p className="text-sm text-ink/65">
                 {mode === "upload"
-                  ? "Add a clean source file and create a workspace entry."
-                  : "Point DubbAI at a source URL and import it into the library."}
+                  ? "Add a source file, choose the language pair, and create a task-ready project."
+                  : "Import a video URL, choose the language pair, and add it to the task list."}
               </p>
             </div>
 
@@ -124,6 +167,43 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
                 value={name}
               />
             </label>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="grid gap-2 text-sm font-medium text-ink">
+                <span>Source language</span>
+                <select
+                  aria-label="Source language"
+                  className="rounded-[1.25rem] border border-black/10 bg-sand/40 px-4 py-3 text-ink outline-none transition focus:border-ember/50 focus:bg-white"
+                  onChange={(event) => handleSourceLanguageChange(event.target.value)}
+                  value={sourceLanguage}
+                >
+                  {languageOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="grid gap-2 text-sm font-medium text-ink">
+                <span>Target language</span>
+                <select
+                  aria-label="Target language"
+                  className="rounded-[1.25rem] border border-black/10 bg-sand/40 px-4 py-3 text-ink outline-none transition focus:border-ember/50 focus:bg-white"
+                  onChange={(event) => setTargetLanguage(event.target.value)}
+                  value={targetLanguage}
+                >
+                  <option value="">Choose target language</option>
+                  {languageOptions
+                    .filter((option) => option.value !== sourceLanguage)
+                    .map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            </div>
 
             {mode === "upload" ? (
               <label className="grid gap-2 text-sm font-medium text-ink" key="upload">
@@ -165,14 +245,20 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
             <div className="rounded-[1.5rem] border border-black/10 bg-ink/[0.03] px-4 py-4 text-sm text-ink/65">
               <p className="font-semibold text-ink">What happens next</p>
               <p className="mt-2 leading-6">
-                The project is added to your library immediately. You can open the workspace,
-                monitor status, and trigger transcript or dubbing jobs from there.
+                The project lands in the task list immediately. English defaults to Polish, Polish
+                defaults to English, and other sources need an explicit target before you continue.
               </p>
             </div>
 
             <button
               className="rounded-full bg-ember px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#b94d2b] disabled:opacity-60"
-              disabled={isSubmitting || (mode === "upload" ? !selectedFile : !sourceUrl) || !name.trim()}
+              disabled={
+                isSubmitting ||
+                (mode === "upload" ? !selectedFile : !sourceUrl) ||
+                !name.trim() ||
+                !sourceLanguage ||
+                !targetLanguage
+              }
               type="submit"
             >
               {isSubmitting ? "Creating project..." : modeCopy[mode].cta}

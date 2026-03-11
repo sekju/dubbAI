@@ -1,31 +1,32 @@
 "use client";
 
-import Link from "next/link";
-
-import type { LibraryPlaylist, LibraryProjectSummary } from "@/lib/types";
+import type { LibraryFolder, LibraryPlaylist, LibraryProjectSummary } from "@/lib/types";
 
 type LibraryInspectorProps = {
-  activeFolderId: string | null;
-  activePlaylistId: string | null;
+  folders: LibraryFolder[];
+  folderTargetId: string;
   onAddToPlaylist: () => void;
   onDeleteProject: () => void;
   onMoveToFolder: () => void;
-  playlist: LibraryPlaylist | null;
+  onSelectFolderTarget: (folderId: string) => void;
+  onSelectPlaylistTarget: (playlistId: string) => void;
+  playlistTargetId: string;
+  playlists: LibraryPlaylist[];
   project: LibraryProjectSummary | null;
 };
 
 export function LibraryInspector({
-  activeFolderId,
-  activePlaylistId,
+  folders,
+  folderTargetId,
   onAddToPlaylist,
   onDeleteProject,
   onMoveToFolder,
-  playlist,
+  onSelectFolderTarget,
+  onSelectPlaylistTarget,
+  playlistTargetId,
+  playlists,
   project
 }: LibraryInspectorProps) {
-  const theaterHref =
-    project && playlist ? `/theater/${playlist.id}/${project.id}` : null;
-
   return (
     <aside className="rounded-[1.75rem] border border-black/10 bg-white/85 p-5 shadow-panel">
       {project ? (
@@ -35,6 +36,10 @@ export function LibraryInspector({
             <h2 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold text-ink">
               {project.name}
             </h2>
+            <p className="mt-2 text-sm leading-6 text-ink/65">
+              Explicitly choose a folder or playlist target here. Organization should not depend on a
+              separately active collection state.
+            </p>
           </div>
 
           <dl className="grid gap-3 text-sm text-ink/72">
@@ -47,28 +52,66 @@ export function LibraryInspector({
               <dd className="mt-2 font-semibold uppercase tracking-[0.18em] text-ink">{project.sourceType}</dd>
             </div>
             <div className="rounded-[1.2rem] bg-sand/55 px-4 py-3">
-              <dt className="text-xs uppercase tracking-[0.24em] text-ink/45">Playlist</dt>
-              <dd className="mt-2 font-semibold text-ink">{playlist?.name ?? "Select a playlist"}</dd>
+              <dt className="text-xs uppercase tracking-[0.24em] text-ink/45">Languages</dt>
+              <dd className="mt-2 font-semibold text-ink">
+                {(project.sourceLanguage ?? "--").toUpperCase()} -&gt; {(project.targetLanguage ?? "--").toUpperCase()}
+              </dd>
             </div>
           </dl>
 
-          <div className="grid gap-2">
+          <div className="grid gap-4 rounded-[1.3rem] border border-black/10 bg-sand/45 p-4">
+            <label className="grid gap-2 text-sm font-medium text-ink">
+              <span>Folder target</span>
+              <select
+                aria-label="Folder target"
+                className="rounded-[1rem] border border-black/10 bg-white px-4 py-3 text-ink"
+                onChange={(event) => onSelectFolderTarget(event.target.value)}
+                value={folderTargetId}
+              >
+                <option value="">Choose folder</option>
+                {folders.map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {folder.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
               className="rounded-full border border-black/10 px-4 py-3 text-sm font-semibold text-ink transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!activeFolderId}
+              disabled={!folderTargetId}
               onClick={onMoveToFolder}
               type="button"
             >
-              Move to active folder
+              Move to folder
             </button>
+
+            <label className="grid gap-2 text-sm font-medium text-ink">
+              <span>Playlist target</span>
+              <select
+                aria-label="Playlist target"
+                className="rounded-[1rem] border border-black/10 bg-white px-4 py-3 text-ink"
+                onChange={(event) => onSelectPlaylistTarget(event.target.value)}
+                value={playlistTargetId}
+              >
+                <option value="">Choose playlist</option>
+                {playlists.map((playlist) => (
+                  <option key={playlist.id} value={playlist.id}>
+                    {playlist.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
               className="rounded-full border border-black/10 px-4 py-3 text-sm font-semibold text-ink transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!activePlaylistId}
+              disabled={!playlistTargetId}
               onClick={onAddToPlaylist}
               type="button"
             >
-              Add to active playlist
+              Add to playlist
             </button>
+          </div>
+
+          <div className="grid gap-2">
             <button
               className="rounded-full border border-red-200 px-4 py-3 text-sm font-semibold text-red-700 transition hover:bg-red-50"
               onClick={onDeleteProject}
@@ -78,27 +121,16 @@ export function LibraryInspector({
             </button>
           </div>
 
-          {theaterHref ? (
-            <Link
-              className="inline-flex items-center justify-center rounded-full bg-ink px-5 py-3 text-sm font-semibold text-white transition hover:bg-ink/90"
-              href={theaterHref}
-            >
-              Open in Theater
-            </Link>
-          ) : (
-            <p className="rounded-[1.2rem] border border-dashed border-black/15 px-4 py-3 text-sm text-ink/60">
-              Select a playlist to launch Theater from this inspector.
-            </p>
-          )}
         </div>
       ) : (
         <div className="space-y-3">
-          <p className="text-xs uppercase tracking-[0.3em] text-aqua">Inspector</p>
+          <p className="text-xs uppercase tracking-[0.3em] text-aqua">Organization</p>
           <h2 className="font-[family-name:var(--font-display)] text-3xl font-semibold text-ink">
-            Nothing selected
+            Choose a project
           </h2>
           <p className="text-sm leading-6 text-ink/65">
-            Pick a project from the grid to see its status and jump into Theater.
+            Choose a project card to assign folders, add it to a playlist, or remove it from the
+            library.
           </p>
         </div>
       )}

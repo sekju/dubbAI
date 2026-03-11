@@ -30,7 +30,11 @@ describe("ProjectIntakeForm", () => {
     await user.click(screen.getByRole("button", { name: /import link to library/i }));
 
     await waitFor(() =>
-      expect(onImport).toHaveBeenCalledWith("Remote clip", "https://example.com/video")
+      expect(onImport).toHaveBeenCalledWith(
+        "Remote clip",
+        "https://example.com/video",
+        expect.objectContaining({ sourceLanguage: "en", targetLanguage: "pl" })
+      )
     );
   });
 });
