@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import close_all_sessions
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -37,11 +39,23 @@ def reset_database() -> None:
         shutil.rmtree(uploads_dir)
     if outputs_dir.exists():
         shutil.rmtree(outputs_dir)
-    Base.metadata.drop_all(bind=engine, checkfirst=True)
+    close_all_sessions()
+    engine.dispose()
+    if TEST_DB_PATH.exists():
+        try:
+            TEST_DB_PATH.unlink()
+        except PermissionError:
+            try:
+                Base.metadata.drop_all(bind=engine, checkfirst=True)
+            except OperationalError:
+                # SQLite on Windows can keep a transient file handle during fixture churn.
+                # If the file is already half-reset, creating the schema fresh below is enough.
+                pass
     Base.metadata.create_all(bind=engine)
     yield
 
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client

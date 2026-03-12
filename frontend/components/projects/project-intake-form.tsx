@@ -3,9 +3,15 @@
 import clsx from "clsx";
 import React, { useState } from "react";
 
+import type { ProjectIntakeLanguages } from "@/lib/types";
+
 type ProjectIntakeFormProps = {
-  onUploadFile: (name: string, file: File) => Promise<void>;
-  onImportUrl: (name: string, sourceUrl: string) => Promise<void>;
+  onUploadFile: (name: string, file: File, options?: ProjectIntakeLanguages) => Promise<void>;
+  onImportUrl: (
+    name: string,
+    sourceUrl: string,
+    options?: ProjectIntakeLanguages,
+  ) => Promise<void>;
 };
 
 const modeCopy = {
@@ -23,44 +29,95 @@ const modeCopy = {
   }
 } as const;
 
+const languageOptions = [
+  { value: "auto", label: "Auto detect" },
+  { value: "en", label: "English" },
+  { value: "pl", label: "Polish" },
+  { value: "de", label: "German" },
+  { value: "fr", label: "French" },
+  { value: "es", label: "Spanish" },
+  { value: "it", label: "Italian" },
+  { value: "ja", label: "Japanese" }
+] as const;
+
+function getDefaultTargetLanguage(sourceLanguage: string): string {
+  if (sourceLanguage === "en") {
+    return "pl";
+  }
+
+  if (sourceLanguage === "pl") {
+    return "en";
+  }
+
+  return "";
+}
+
 export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFormProps) {
   const [mode, setMode] = useState<"upload" | "url">("upload");
   const [name, setName] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [sourceLanguage, setSourceLanguage] = useState("en");
+  const [targetLanguage, setTargetLanguage] = useState("pl");
+  const [geminiModelText, setGeminiModelText] = useState<"gemini-2.5-flash-lite" | "gemini-2.5-flash">(
+    "gemini-2.5-flash-lite"
+  );
+  const [geminiThinkingMode, setGeminiThinkingMode] = useState<"off" | "dynamic" | "budget">("off");
+  const [geminiThinkingBudget, setGeminiThinkingBudget] = useState("1024");
+  const [geminiStructuredOutput, setGeminiStructuredOutput] = useState(true);
+  const [geminiMaxOutputTokens, setGeminiMaxOutputTokens] = useState("65536");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSubmitting(true);
+
+    const options: ProjectIntakeLanguages = {
+      sourceLanguage: sourceLanguage || null,
+      targetLanguage: targetLanguage || null,
+      geminiModelText,
+      geminiThinkingMode,
+      geminiThinkingBudget:
+        geminiThinkingMode === "budget" ? Number.parseInt(geminiThinkingBudget, 10) || 1024 : null,
+      geminiMaxOutputTokens: Number.parseInt(geminiMaxOutputTokens, 10) || 65536,
+      geminiStructuredOutput
+    };
+
     try {
       if (mode === "upload" && selectedFile) {
-        await onUploadFile(name, selectedFile);
+        await onUploadFile(name, selectedFile, options);
         setSelectedFile(null);
       }
+
       if (mode === "url") {
-        await onImportUrl(name, sourceUrl);
+        await onImportUrl(name, sourceUrl, options);
         setSourceUrl("");
       }
+
       setName("");
     } finally {
       setIsSubmitting(false);
     }
   }
 
+  function handleSourceLanguageChange(nextSourceLanguage: string) {
+    setSourceLanguage(nextSourceLanguage);
+    setTargetLanguage(getDefaultTargetLanguage(nextSourceLanguage));
+  }
+
   return (
     <section className="overflow-hidden rounded-[2rem] border border-black/10 bg-white/80 shadow-panel backdrop-blur">
-      <div className="grid gap-0 lg:grid-cols-[1.1fr_0.9fr]">
+      <div className="grid gap-0 lg:grid-cols-[1.05fr_0.95fr]">
         <div className="space-y-6 bg-ink px-6 py-7 text-white lg:px-8">
           <div className="space-y-3">
             <p className="text-xs uppercase tracking-[0.3em] text-aqua">New project</p>
             <div className="space-y-2">
               <h2 className="font-[family-name:var(--font-display)] text-3xl font-bold leading-tight text-sand">
-                Start a dubbing job without touching the backend.
+                New Project
               </h2>
               <p className="max-w-xl text-sm leading-6 text-fog/80">
-                Create a library-ready project, then jump straight into transcript, translation,
-                dubbing, and export once the pipeline finishes.
+                Start from a source file or URL, lock the language pair up front, then move
+                straight into transcript, translation, and Theater review.
               </p>
             </div>
           </div>
@@ -89,16 +146,16 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
 
           <div className="grid gap-3 text-sm text-fog/75 sm:grid-cols-3">
             <div className="rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-3">
-              <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Formats</p>
-              <p className="mt-2 font-medium text-white">MP4, MOV, MKV, WEBM</p>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Defaults</p>
+              <p className="mt-2 font-medium text-white">EN to PL, PL to EN</p>
             </div>
             <div className="rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-3">
               <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Pipeline</p>
-              <p className="mt-2 font-medium text-white">Transcript, translate, dub</p>
+              <p className="mt-2 font-medium text-white">Transcribe, translate, review</p>
             </div>
             <div className="rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-3">
-              <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Ready for</p>
-              <p className="mt-2 font-medium text-white">Desktop review and export</p>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-fog/55">Gemini</p>
+              <p className="mt-2 font-medium text-white">Flash-Lite fast, Flash richer</p>
             </div>
           </div>
         </div>
@@ -106,11 +163,11 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
         <div className="bg-white px-6 py-7 lg:px-8">
           <form className="grid gap-5" noValidate onSubmit={handleSubmit}>
             <div className="space-y-1">
-              <p className="text-xs uppercase tracking-[0.26em] text-ember">Project details</p>
+              <p className="text-xs uppercase tracking-[0.26em] text-ember">Intake</p>
               <p className="text-sm text-ink/65">
                 {mode === "upload"
-                  ? "Add a clean source file and create a workspace entry."
-                  : "Point DubbAI at a source URL and import it into the library."}
+                  ? "Add a source file, choose the language pair, and create a task-ready project."
+                  : "Import a video URL, choose the language pair, and add it to the task list."}
               </p>
             </div>
 
@@ -124,6 +181,122 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
                 value={name}
               />
             </label>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="grid gap-2 text-sm font-medium text-ink">
+                <span>Source language</span>
+                <select
+                  aria-label="Source language"
+                  className="rounded-[1.25rem] border border-black/10 bg-sand/40 px-4 py-3 text-ink outline-none transition focus:border-ember/50 focus:bg-white"
+                  onChange={(event) => handleSourceLanguageChange(event.target.value)}
+                  value={sourceLanguage}
+                >
+                  {languageOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="grid gap-2 text-sm font-medium text-ink">
+                <span>Target language</span>
+                <select
+                  aria-label="Target language"
+                  className="rounded-[1.25rem] border border-black/10 bg-sand/40 px-4 py-3 text-ink outline-none transition focus:border-ember/50 focus:bg-white"
+                  onChange={(event) => setTargetLanguage(event.target.value)}
+                  value={targetLanguage}
+                >
+                  <option value="">Choose target language</option>
+                  {languageOptions
+                    .filter((option) => option.value !== sourceLanguage && option.value !== "auto")
+                    .map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="grid gap-4 rounded-[1.5rem] border border-black/10 bg-sand/35 px-4 py-4">
+              <div className="space-y-1">
+                <p className="text-xs uppercase tracking-[0.26em] text-ember">Gemini controls</p>
+                <p className="text-sm text-ink/65">
+                  Choose latency/cost, thinking mode, max output tokens, and whether to request a strict response schema.
+                </p>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="grid gap-2 text-sm font-medium text-ink">
+                  <span>Model</span>
+                  <select
+                    aria-label="Gemini model"
+                    className="rounded-[1.25rem] border border-black/10 bg-white px-4 py-3 text-ink outline-none transition focus:border-ember/50"
+                    onChange={(event) => setGeminiModelText(event.target.value as "gemini-2.5-flash-lite" | "gemini-2.5-flash")}
+                    value={geminiModelText}
+                  >
+                    <option value="gemini-2.5-flash-lite">Flash-Lite: fast and cheap</option>
+                    <option value="gemini-2.5-flash">Flash: slower, stronger</option>
+                  </select>
+                </label>
+
+                <label className="grid gap-2 text-sm font-medium text-ink">
+                  <span>Thinking</span>
+                  <select
+                    aria-label="Gemini thinking"
+                    className="rounded-[1.25rem] border border-black/10 bg-white px-4 py-3 text-ink outline-none transition focus:border-ember/50"
+                    onChange={(event) => setGeminiThinkingMode(event.target.value as "off" | "dynamic" | "budget")}
+                    value={geminiThinkingMode}
+                  >
+                    <option value="off">Off</option>
+                    <option value="dynamic">Dynamic</option>
+                    <option value="budget">Custom budget</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="grid gap-2 text-sm font-medium text-ink">
+                  <span>Max output tokens</span>
+                  <input
+                    aria-label="Gemini max output tokens"
+                    className="rounded-[1.25rem] border border-black/10 bg-white px-4 py-3 text-ink outline-none transition focus:border-ember/50"
+                    max={65536}
+                    min={1}
+                    onChange={(event) => setGeminiMaxOutputTokens(event.target.value)}
+                    step={1}
+                    type="number"
+                    value={geminiMaxOutputTokens}
+                  />
+                </label>
+
+                <label className="grid gap-2 text-sm font-medium text-ink">
+                  <span>Thinking budget</span>
+                  <input
+                    aria-label="Gemini thinking budget"
+                    className="rounded-[1.25rem] border border-black/10 bg-white px-4 py-3 text-ink outline-none transition focus:border-ember/50 disabled:bg-sand/30"
+                    disabled={geminiThinkingMode !== "budget"}
+                    max={24576}
+                    min={0}
+                    onChange={(event) => setGeminiThinkingBudget(event.target.value)}
+                    step={1}
+                    type="number"
+                    value={geminiThinkingBudget}
+                  />
+                </label>
+              </div>
+
+              <label className="flex items-center justify-between gap-4 rounded-[1.25rem] border border-black/10 bg-white px-4 py-3 text-sm font-medium text-ink">
+                <span>Structured output schema</span>
+                <input
+                  aria-label="Structured output schema"
+                  checked={geminiStructuredOutput}
+                  onChange={(event) => setGeminiStructuredOutput(event.target.checked)}
+                  type="checkbox"
+                />
+              </label>
+            </div>
 
             {mode === "upload" ? (
               <label className="grid gap-2 text-sm font-medium text-ink" key="upload">
@@ -165,14 +338,21 @@ export function ProjectIntakeForm({ onUploadFile, onImportUrl }: ProjectIntakeFo
             <div className="rounded-[1.5rem] border border-black/10 bg-ink/[0.03] px-4 py-4 text-sm text-ink/65">
               <p className="font-semibold text-ink">What happens next</p>
               <p className="mt-2 leading-6">
-                The project is added to your library immediately. You can open the workspace,
-                monitor status, and trigger transcript or dubbing jobs from there.
+                The project lands in the task list immediately. English defaults to Polish, Polish
+                defaults to English, `Auto detect` lets Gemini infer the source language, and the
+                selected Gemini controls stay with the project for retry and translation.
               </p>
             </div>
 
             <button
               className="rounded-full bg-ember px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#b94d2b] disabled:opacity-60"
-              disabled={isSubmitting || (mode === "upload" ? !selectedFile : !sourceUrl) || !name.trim()}
+              disabled={
+                isSubmitting ||
+                (mode === "upload" ? !selectedFile : !sourceUrl) ||
+                !name.trim() ||
+                !sourceLanguage ||
+                !targetLanguage
+              }
               type="submit"
             >
               {isSubmitting ? "Creating project..." : modeCopy[mode].cta}

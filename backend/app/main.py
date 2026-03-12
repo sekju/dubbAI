@@ -3,19 +3,102 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import Engine
 
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import engine
-from app.models import PipelineJob, Project, TranscriptSegment, User
+from app.models import PipelineJob, Project, TranscriptSegment, TranscriptWord, User
 
 settings = get_settings()
+
+
+def ensure_project_schema(db_engine: Engine) -> None:
+    inspector = inspect(db_engine)
+    if not inspector.has_table("projects"):
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("projects")}
+    missing_columns = {
+        "source_language": "ALTER TABLE projects ADD COLUMN source_language VARCHAR(32)",
+        "target_language": "ALTER TABLE projects ADD COLUMN target_language VARCHAR(32)",
+        "gemini_model_text": (
+            "ALTER TABLE projects ADD COLUMN gemini_model_text "
+            "VARCHAR(64) NOT NULL DEFAULT 'gemini-2.5-flash-lite'"
+        ),
+        "gemini_thinking_mode": (
+            "ALTER TABLE projects ADD COLUMN gemini_thinking_mode "
+            "VARCHAR(16) NOT NULL DEFAULT 'off'"
+        ),
+        "gemini_thinking_budget": "ALTER TABLE projects ADD COLUMN gemini_thinking_budget INTEGER",
+        "gemini_max_output_tokens": (
+            "ALTER TABLE projects ADD COLUMN gemini_max_output_tokens "
+            "INTEGER NOT NULL DEFAULT 65536"
+        ),
+        "gemini_structured_output": (
+            "ALTER TABLE projects ADD COLUMN gemini_structured_output "
+            "BOOLEAN NOT NULL DEFAULT TRUE"
+        ),
+        "transcript_status": (
+            "ALTER TABLE projects ADD COLUMN transcript_status "
+            "VARCHAR(32) NOT NULL DEFAULT 'not_started'"
+        ),
+        "translation_status": (
+            "ALTER TABLE projects ADD COLUMN translation_status "
+            "VARCHAR(32) NOT NULL DEFAULT 'not_started'"
+        ),
+        "dubbing_status": (
+            "ALTER TABLE projects ADD COLUMN dubbing_status "
+            "VARCHAR(32) NOT NULL DEFAULT 'not_started'"
+        ),
+    }
+
+    with db_engine.begin() as connection:
+        for column_name, ddl in missing_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(text(ddl))
+
+        connection.execute(
+            text(
+                """
+                UPDATE projects
+                SET transcript_status = CASE
+                    WHEN status = 'transcription_queued' THEN 'queued'
+                    WHEN status = 'transcribing' THEN 'in_progress'
+                    WHEN status = 'transcribed' THEN 'ready'
+                    WHEN status = 'transcription_failed' THEN 'failed'
+                    ELSE transcript_status
+                END
+                WHERE transcript_status = 'not_started'
+                  AND status IN (
+                    'transcription_queued',
+                    'transcribing',
+                    'transcribed',
+                    'transcription_failed'
+                  )
+                """
+            )
+        )
+
+
+def ensure_transcript_word_schema(db_engine: Engine) -> None:
+    inspector = inspect(db_engine)
+    if not inspector.has_table("projects"):
+        return
+
+    if inspector.has_table("transcript_words"):
+        return
+
+    TranscriptWord.__table__.create(bind=db_engine)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    ensure_project_schema(engine)
+    ensure_transcript_word_schema(engine)
     yield
 
 
